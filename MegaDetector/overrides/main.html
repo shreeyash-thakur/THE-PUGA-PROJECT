@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{#
+  Theme override for SEO structured data and a clean homepage <title>.
+  Schema is gated on page.file.src_path (unique per page, cannot be copied
+  between pages by accident) rather than a front-matter flag.
+#}
+
+{% block htmltitle %}
+  {%- if page and page.file and page.file.src_path == "index.md" -%}
+  <title>MegaDetector: Open-Source Camera-Trap AI | Microsoft AI for Good</title>
+  {%- else -%}
+  {{ super() }}
+  {%- endif -%}
+{% endblock %}
+
+{% block extrahead %}
+  {{ super() }}
+
+  {#- Open Graph / Twitter Card social metadata (per-page title/description, local share image) -#}
+  {%- set social_title = page.meta.title if page and page.meta and page.meta.title else (page.title if page and page.title else config.site_name) -%}
+  {%- set social_desc = page.meta.description if page and page.meta and page.meta.description else config.site_description -%}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ config.site_name }}">
+  <meta property="og:title" content="{{ social_title | striptags }}">
+  <meta property="og:description" content="{{ social_desc | striptags }}">
+  <meta property="og:url" content="{{ page.canonical_url if page and page.canonical_url else config.site_url }}">
+  <meta property="og:image" content="{{ config.site_url }}assets/megadetector-banner.png">
+  <meta property="og:image:alt" content="MegaDetector: open-source camera-trap AI from the Microsoft AI for Good Lab">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ social_title | striptags }}">
+  <meta name="twitter:description" content="{{ social_desc | striptags }}">
+  <meta name="twitter:image" content="{{ config.site_url }}assets/megadetector-banner.png">
+  <meta name="twitter:image:alt" content="MegaDetector: open-source camera-trap AI from the Microsoft AI for Good Lab">
+
+  {%- if page and page.file and page.file.src_path == "index.md" %}
+  {#- Homepage: a connected @graph (WebSite + SoftwareSourceCode + Organization),
+     cross-linked by @id, per the cluster schema standard. -#}
+  <script type="application/ld+json">
+  {{- {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": config.site_url ~ "#website",
+        "url": config.site_url,
+        "name": config.site_name,
+        "inLanguage": "en",
+        "description": config.site_description,
+        "publisher": { "@id": "https://www.microsoft.com/en-us/ai/ai-for-good#organization" }
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "@id": config.site_url ~ "#software",
+        "name": "MegaDetector",
+        "description": config.site_description,
+        "url": config.site_url,
+        "mainEntityOfPage": config.site_url,
+        "codeRepository": config.repo_url,
+        "programmingLanguage": "Python",
+        "runtimePlatform": "Python",
+        "isAccessibleForFree": true,
+        "license": "https://github.com/microsoft/MegaDetector/blob/main/LICENSE",
+        "creator": { "@id": "https://www.microsoft.com/en-us/ai/ai-for-good#organization" },
+        "maintainer": { "@id": "https://www.microsoft.com/en-us/ai/ai-for-good#organization" },
+        "sameAs": ["https://github.com/microsoft/MegaDetector"],
+        "citation": "https://arxiv.org/abs/1907.06772",
+        "keywords": ["MegaDetector", "camera trap AI", "wildlife detection", "animal detection", "conservation AI", "blank frame filtering", "PyTorch-Wildlife"]
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://www.microsoft.com/en-us/ai/ai-for-good#organization",
+        "name": "Microsoft AI for Good Lab",
+        "url": "https://www.microsoft.com/en-us/ai/ai-for-good"
+      }
+    ]
+  } | tojson -}}
+  </script>
+  {%- endif %}
+
+  {%- if page and page.file and page.file.src_path == "faq.md" %}
+  {#- FAQ page only: FAQPage. Answers mirror the visible faq.md text. -#}
+  <script type="application/ld+json">
+  {{- {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is MegaDetector?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "MegaDetector is the Microsoft AI for Good Lab's open-source model for finding animals, people, and vehicles in camera-trap images. It draws a bounding box around each detected object and gives it a confidence score between 0 and 1. It is a detector, not a classifier: it tells you something is there, not which species. One detector generalizes across ecosystems far better than a region-specific species classifier. For species identification, pair MegaDetector with a downstream classifier."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does MegaDetector detect?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "MegaDetector detects three categories: animal (mammals, birds, reptiles, insects, fish, any wildlife), person (researchers, poachers, tourists), and vehicle (cars, trucks, ATVs). It does not identify species. An image containing a lion and a zebra returns two animal detections, not lion and zebra."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Do I need a GPU?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No, MegaDetector runs on CPU. A GPU with CUDA support gives a 10–50x speedup and is strongly recommended for large datasets (tens of thousands of images or more), but is not required. The compact MegaDetectorV6 variants (YOLOv10-Compact, YOLOv9-Compact) are specifically designed for low-budget devices and edge hardware like the SPARROW field unit."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "MegaDetector V6 vs V5: what's the difference?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "MegaDetectorV5 uses the YOLOv5 architecture with 139.9M parameters. MegaDetectorV6 uses modern architectures (YOLOv9, YOLOv10, RT-DETR) with compact variants as small as 2.3M parameters, about 2% of V5. Both are MIT-licensed. Use MegaDetectorV6 for new projects; MegaDetectorV5 weights remain available on the archive branch for projects already built around them."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How accurate is MegaDetector?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Accuracy depends on the dataset and confidence threshold. MegaDetectorV6 compact variants achieve comparable accuracy to V5 at 2% of the parameter count on the AI for Good Lab's validation datasets. Most deployments use a confidence threshold of 0.15–0.3 for the animal category, which provides high recall at the cost of some false positives on vegetation and lighting artifacts. MegaDetector generalizes well across ecosystems because it was trained on a large and geographically diverse dataset, and performance is typically strongest on large mammals."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What species does MegaDetector support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "All of them, with caveats. MegaDetector detects the presence of an animal, not the species. It has been deployed on projects involving African savanna megafauna, North American forest species, European ungulates, tropical insects, and marine wildlife. Large mammals in open habitat are reliably detected, while very small animals, heavily camouflaged species, or unusual angles may have lower confidence scores. Test on a labeled sample before full deployment on an atypical dataset."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I run MegaDetector?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The quickest path is three lines of Python: install PytorchWildlife with pip, import the detection module, create a MegaDetectorV6 model, and call batch_image_detection on an image folder. For a graphical interface, use SPARROW Studio or the Hugging Face demo. See the Installation guide for full setup instructions."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the megadetector CLI?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "megadetector is a command-line tool registered when you install the repository from source with pip install -e. It runs the same V6 models without writing any Python, for example: megadetector detect --input ./images/ --output results.json --model MDV6-yolov10-e. It also exposes train, validate, and inference for fine-tuning. The full flag list and supported --model values are in the CLI reference."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does MegaDetector output look like?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "MegaDetector returns one record per image: a file path plus a list of detections, each carrying a category (animal, person, or vehicle), a confidence score from 0 to 1, and a bbox as [x1, y1, x2, y2] pixel coordinates. Detections below your threshold are dropped, and the JSON feeds straight into review tools or a species classifier. See the Output Format reference for the full schema."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the license?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "MegaDetector is released under the MIT License. You can use it for any purpose, including commercial use, subject to the license terms. The PyTorch-Wildlife framework that distributes MegaDetector is also MIT-licensed. Individual model weights may carry separate licenses; see the Model Zoo for per-model licensing information."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I filter blank camera-trap images?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Run MegaDetector across your image folder and keep only the frames that have an animal, person, or vehicle detection above your confidence threshold. Everything below the threshold is a blank you can set aside. Since most camera-trap datasets are mostly empty, this one pass clears the bulk of the review queue before any human looks at an image. See the Camera-Trap AI page for the full blank-filtering workflow."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What confidence threshold should I use?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A starting value of 0.15–0.3 on the animal category works for most datasets. That range favors recall, so you keep most true animals while accepting some false positives on moving vegetation and lighting artifacts. Raise it when a clean set matters more than catching every animal; lower it when a missed animal costs more than a few extra frames to review. When you move to a new deployment, check recall against a small labeled set first."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I fine-tune MegaDetector on my own data?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. MegaDetectorV6 ships a training pipeline for fine-tuning the YOLOv9, YOLOv10, and RT-DETR variants on your own labeled camera-trap images, which helps when your species or habitats are thin in the base model. The fine-tuning guide covers the data layout, the configuration file, and the megadetector train command from start to finish."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Where are the V5 weights?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "MegaDetectorV5 weights are available on the archive branch of the microsoft/Biodiversity repository (formerly microsoft/CameraTraps). They load directly through PyTorch-Wildlife, so existing V5 workflows keep running without changes."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I cite MegaDetector?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A CITATION.cff is maintained in this repository for automated citation tools such as Zenodo and GitHub's Cite this repository button. For MegaDetector, cite Beery, Morris, Yang (2019), Efficient Pipeline for Camera Trap Image Review, arXiv:1907.06772. For the PyTorch-Wildlife framework, cite Hernandez et al. (2024), Pytorch-Wildlife: A Collaborative Deep Learning Framework for Conservation, arXiv:2405.12930. See Cite Us for full citation details and BibTeX."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Where do I get help?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Get help through GitHub Issues at microsoft/MegaDetector/issues for bug reports and feature requests, the PyTorch-Wildlife Discord server for community support, or email zhongqimiao@microsoft.com. For contributions, see the contributing guide covering issue routing, pull requests, and security reporting."
+        }
+      }
+    ]
+  } | tojson -}}
+  </script>
+  {%- endif %}
+
+  {%- if page and page.file and page.file.src_path != "index.md" and page.canonical_url %}
+  {#- Interior pages only: BreadcrumbList (no breadcrumb on the homepage) -#}
+  <script type="application/ld+json">
+  {{- {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "MegaDetector", "item": config.site_url },
+      { "@type": "ListItem", "position": 2, "name": page.title | striptags, "item": page.canonical_url }
+    ]
+  } | tojson -}}
+  </script>
+  {%- endif %}
+{% endblock %}
