@@ -158,3 +158,29 @@ def get_embeddings_for_tiger(db: Session, tiger_id: str) -> List[models.Embeddin
     return (
         db.query(models.Embedding).filter(models.Embedding.tiger_id == tiger_id).all()
     )
+
+
+def get_all_embeddings(db: Session) -> List[models.Embedding]:
+    """All stored embeddings, used to compare a new embedding against the
+    existing gallery. Fine at hackathon/demo scale (SQLite, no index
+    needed); would want a proper vector index before this grows large."""
+    return db.query(models.Embedding).all()
+
+
+def get_embedding_for_sighting(
+    db: Session, sighting_id: str
+) -> Optional[models.Embedding]:
+    return (
+        db.query(models.Embedding)
+        .filter(models.Embedding.sighting_id == sighting_id)
+        .first()
+    )
+
+
+def generate_unique_tiger_id(db: Session) -> str:
+    """Generate a fresh, human-readable TIGER-xxxx id that doesn't
+    collide with an existing one."""
+    while True:
+        candidate = f"TIGER-{uuid.uuid4().hex[:6].upper()}"
+        if get_tiger(db, candidate) is None:
+            return candidate

@@ -43,6 +43,57 @@ python seed.py
 Creates `TIGER-001` / `TIGER-002`, two sample cameras, and a few sample
 sightings (metadata only, no fake images/embeddings). Safe to re-run.
 
+## AI pipeline integration (`/api/analyze`)
+
+`POST /api/analyze` runs the full pipeline on an uploaded image:
+
+```
+image -> MegaDetector -> crop best animal detection -> MegaDescriptor-L-384
+      -> embedding (.pt) -> similarity vs. stored embeddings -> SQLite rows
+```
+
+This reuses the project's existing `MegaDetector/src/megadetector_ai`
+package and the corrected MegaDescriptor-L-384 preprocessing from
+`MegaDetector/test_tiger_reid.py` (mean=std=0.5) — no model or transform
+code is duplicated; see `app/services/ai_pipeline.py`.
+
+**This endpoint needs extra, heavier dependencies** that are deliberately
+*not* in `requirements.txt` (see `requirements-ai.txt`):
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-ai.txt
+pip install -e ../MegaDetector   # makes `megadetector_ai` importable
+```
+
+If these aren't installed, the base backend (all CRUD endpoints, `/api/health`,
+Swagger, `pytest`) still works fine — only `/api/analyze` returns `503` with
+a clear message telling you what's missing.
+
+Request (multipart form):
+
+| field | required | notes |
+|---|---|---|
+| `file` | yes | image file (`.jpg/.jpeg/.png/.bmp/.tif/.tiff/.webp`) |
+| `tiger_id` | no | assign the sighting to this existing tiger instead of auto-creating one |
+| `camera_id` | no | must already exist (`POST /api/cameras`) |
+| `latitude`, `longitude`, `location_name` | no | |
+| `detection_threshold` | no | default `0.2`, matches MegaDetector CLI default |
+
+Response highlights:
+
+- `animal_detected`, `detections`, `used_detection` — what MegaDetector found.
+- `crop_path`, `embedding_id`, `embedding_path` — where the crop/embedding were saved.
+- `tiger_id` + `tiger_status` (`"new"` or `"matched"`) — if `tiger_id` wasn't
+  supplied, a new tiger is auto-created (status `"unidentified"`).
+- `candidate_matches` — cosine similarity of the new embedding against every
+  other tiger's stored embeddings, **highest first, no threshold applied**.
+  This is informational only, not an automatic identification — matching
+  logic is intentionally left for a later task.
+
+`GET /api/analyze/{sighting_id}` returns the combined sighting + tiger +
+embedding record produced by a previous analyze call.
+
 ## Tests
 
 ```bash
@@ -62,10 +113,14 @@ backend/
 │   ├── models.py        # Tiger, Camera, Sighting, Embedding tables
 │   ├── schemas.py        # Pydantic request/response models
 │   ├── crud.py          # DB access functions
-│   └── routers/
-│       ├── tigers.py
-│       ├── sightings.py
-│       └── cameras.py
+│   ├── routers/
+│   │   ├── tigers.py
+│   │   ├── sightings.py
+│   │   ├── cameras.py
+│   │   └── analyze.py    # POST /api/analyze, GET /api/analyze/{sighting_id}
+│   └── services/
+│       ├── ai_pipeline.py     # MegaDetector + MegaDescriptor wrapper (lazy-loaded)
+│       └── analyze_service.py # orchestrates upload -> AI -> DB
 ├── data/
 │   ├── images/          # full camera-trap images
 │   ├── crops/            # cropped animal/tiger images

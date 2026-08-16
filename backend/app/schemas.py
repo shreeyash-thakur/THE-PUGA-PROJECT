@@ -118,6 +118,54 @@ class EmbeddingOut(EmbeddingBase):
 
 
 # ---------------------------------------------------------------------------
+# Analyze (AI pipeline integration)
+# ---------------------------------------------------------------------------
+
+class DetectionOut(BaseModel):
+    category: str
+    confidence: float
+    bbox: list[float]
+
+
+class CandidateMatch(BaseModel):
+    """A similarity score against one existing tiger's stored embeddings.
+    This is NOT an identification -- see AnalyzeResponse.note."""
+
+    tiger_id: str
+    similarity_score: float
+
+
+class AnalyzeResponse(BaseModel):
+    image_id: str
+    image_path: str
+
+    detections: list[DetectionOut]
+    animal_detected: bool
+    used_detection: Optional[DetectionOut] = None
+
+    crop_path: Optional[str] = None
+    embedding_id: Optional[int] = None
+    embedding_path: Optional[str] = None
+
+    sighting_id: Optional[str] = None
+    tiger_id: Optional[str] = None
+    tiger_status: Optional[str] = None  # "matched" | "new" | None
+
+    candidate_matches: list[CandidateMatch] = []
+
+    note: str
+
+
+class AnalyzeResultOut(BaseModel):
+    """Combined view of a sighting + its tiger + its embedding, for
+    GET /api/analyze/{sighting_id}."""
+
+    sighting: SightingOut
+    tiger: Optional[TigerOut] = None
+    embedding: Optional[EmbeddingOut] = None
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 

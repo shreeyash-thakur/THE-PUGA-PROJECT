@@ -1,0 +1,22 @@
+# Only needed for the POST /api/analyze endpoint (MegaDetector +
+# MegaDescriptor). NOT required to run the base backend, its CRUD
+# endpoints, or backend/tests/test_api.py.
+#
+# These normally already live in the project's separate MegaDetector conda
+# environment (see MegaDetector/environment.yaml). If you're running the
+# backend and the AI pipeline from the SAME Python environment, install
+# these here too:
+#
+#   pip install -r requirements.txt
+#   pip install -r requirements-ai.txt
+#   pip install -e ../MegaDetector
+#
+# (the last line makes `megadetector_ai` importable; app/services/ai_pipeline.py
+# also falls back to adding MegaDetector/src to sys.path directly if it
+# isn't installed as a package).
+
+torch>=2.0.0
+torchvision
+timm
+PytorchWildlife
+ultralytics>=8.0.0

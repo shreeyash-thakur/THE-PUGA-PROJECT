@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_storage, DATABASE_PATH
-from app.routers import tigers, sightings, cameras
+from app.routers import tigers, sightings, cameras, analyze
 from app.schemas import Health
 
 ALLOWED_ORIGINS = [
@@ -40,6 +40,7 @@ app.add_middleware(
 app.include_router(tigers.router)
 app.include_router(sightings.router)
 app.include_router(cameras.router)
+app.include_router(analyze.router)
 
 
 @app.get("/api/health", response_model=Health, tags=["health"])
