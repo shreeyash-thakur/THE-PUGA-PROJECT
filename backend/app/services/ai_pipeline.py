@@ -108,7 +108,11 @@ def get_detector(device: Optional[str] = None):
     resolved_device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
     try:
-        model = MegaDetectorV6(device=resolved_device, pretrained=True)
+        model = MegaDetectorV6(
+    device=resolved_device,
+    pretrained=True,
+    version="MDV6-yolov9-c",
+)
     except Exception as exc:  # model download / weights problem
         raise AIModelUnavailableError(
             f"Failed to load MegaDetectorV6 weights: {exc}"
