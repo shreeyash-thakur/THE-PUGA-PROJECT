@@ -1,0 +1,80 @@
+[
+  {
+    "file": "D:\\THE PUGA PROJECT\\reid_test\\Tiger_A\\images (25).jpg",
+    "detections": [
+      {
+        "category": "animal",
+        "confidence": 0.6405,
+        "bbox": [
+          164.4,
+          188.3,
+          444.7,
+          305.8
+        ]
+      }
+    ]
+  },
+  {
+    "file": "D:\\THE PUGA PROJECT\\reid_test\\Tiger_A\\images (26).jpg",
+    "detections": []
+  },
+  {
+    "file": "D:\\THE PUGA PROJECT\\reid_test\\Tiger_A\\images (27).jpg",
+    "detections": []
+  },
+  {
+    "file": "D:\\THE PUGA PROJECT\\reid_test\\Tiger_B\\tiger12.jpg",
+    "detections": [
+      {
+        "category": "animal",
+        "confidence": 0.6908,
+        "bbox": [
+          147.6,
+          183.3,
+          531.8,
+          428.0
+        ]
+      },
+      {
+        "category": "animal",
+        "confidence": 0.6281,
+        "bbox": [
+          62.1,
+          180.3,
+          451.4,
+          428.2
+        ]
+      }
+    ]
+  },
+  {
+    "file": "D:\\THE PUGA PROJECT\\reid_test\\Tiger_B\\tiger13.jpg",
+    "detections": [
+      {
+        "category": "animal",
+        "confidence": 0.209,
+        "bbox": [
+          554.7,
+          216.9,
+          1078.2,
+          675.7
+        ]
+      }
+    ]
+  },
+  {
+    "file": "D:\\THE PUGA PROJECT\\reid_test\\Tiger_B\\tiger14.jpg",
+    "detections": [
+      {
+        "category": "person",
+        "confidence": 0.2111,
+        "bbox": [
+          0.5,
+          1.5,
+          197.4,
+          204.0
+        ]
+      }
+    ]
+  }
+]
