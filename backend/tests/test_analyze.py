@@ -206,6 +206,141 @@ def test_analyze_similarity_scoring_against_existing_gallery(client, monkeypatch
     assert match["similarity_score"] == pytest.approx(1.0, abs=1e-3)
 
 
+class _FakeUpload:
+    """Minimal stand-in for FastAPI's UploadFile -- analyze_service only
+    reads `.filename` off it."""
+
+    def __init__(self, filename: str):
+        self.filename = filename
+
+
+@pytest.fixture()
+def service_env(monkeypatch, tmp_path):
+    """Lower-level fixture that gives direct access to a DB session and
+    the (path-patched) analyze_service module, bypassing the HTTP layer.
+    Used for white-box tests of the self-comparison guard that need to
+    seed specific DB rows / files that aren't reachable through the
+    public API."""
+    from app import models  # noqa: F401
+    from app.database import Base
+    from app.services import analyze_service as service_module
+
+    db_path = tmp_path / "svc_test.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    data_dir = tmp_path / "data"
+    images_dir = data_dir / "images"
+    crops_dir = data_dir / "crops"
+    embeddings_dir = data_dir / "embeddings"
+    for d in (images_dir, crops_dir, embeddings_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(service_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(service_module, "IMAGES_DIR", images_dir)
+    monkeypatch.setattr(service_module, "CROPS_DIR", crops_dir)
+    monkeypatch.setattr(service_module, "EMBEDDINGS_DIR", embeddings_dir)
+
+    db = TestingSessionLocal()
+    try:
+        yield db, service_module
+    finally:
+        db.close()
+
+
+def test_first_analyze_call_never_matches_itself(client, mock_detection_with_animal):
+    """Regression test for the audited '1.0 similarity' report: with an
+    empty gallery, a brand-new tiger's own embedding must never appear in
+    its own candidate_matches."""
+    files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+    body = client.post("/api/analyze", files=files).json()
+
+    assert body["candidate_matches"] == []
+    assert body["tiger_id"] not in [m["tiger_id"] for m in body["candidate_matches"]]
+
+
+def test_distinct_embeddings_do_not_score_as_identical(client, monkeypatch):
+    """Sanity check for the opposite failure mode: two genuinely
+    different embeddings must NOT be reported as a perfect match, proving
+    the comparison logic still discriminates correctly (not just always
+    returning 1.0)."""
+    embedding_a = torch.zeros(1, 1536)
+    embedding_a[0, 0] = 1.0  # unit vector along axis 0
+
+    embedding_b = torch.zeros(1, 1536)
+    embedding_b[0, 1] = 1.0  # unit vector along axis 1 -- orthogonal to A
+
+    monkeypatch.setattr(
+        ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_WITH_ANIMAL
+    )
+
+    monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_a.clone())
+    files = {"file": ("tiger_a.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+    client.post("/api/analyze", files=files)
+
+    monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_b.clone())
+    files = {"file": ("tiger_b.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+    second = client.post("/api/analyze", files=files).json()
+
+    assert second["candidate_matches"], "expected a candidate match against tiger A"
+    assert second["candidate_matches"][0]["similarity_score"] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
+    """White-box regression test for the exact self-comparison scenario
+    the audit was checking for: if a DB row's embedding_path ever ends up
+    identical to the embedding_path about to be used for the *current*
+    request (e.g. a future refactor that saves/commits the new embedding
+    before running the gallery comparison), the guard in
+    analyze_service.analyze_image must exclude that row rather than
+    silently comparing the new embedding to itself.
+
+    We force this collision deterministically by pinning
+    `_validate_and_save_upload`'s image_id for two consecutive calls, so
+    both calls compute the exact same embedding_path. Without the
+    `existing.embedding_path == embedding_rel_path` guard, this test
+    fails (the decoy tiger would show up in candidate_matches at 1.0,
+    because by the time it's compared its file has literally been
+    overwritten with the new call's embedding)."""
+    db, service_module = service_env
+
+    fixed_embedding = torch.nn.functional.normalize(torch.full((1, 1536), 2.0), dim=1)
+    monkeypatch.setattr(
+        ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_WITH_ANIMAL
+    )
+    monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: fixed_embedding.clone())
+
+    fixed_image_id = "collide1234x"
+    original_validate = service_module._validate_and_save_upload
+
+    def forced_validate(upload, raw_bytes):
+        _, path = original_validate(upload, raw_bytes)
+        return fixed_image_id, path
+
+    monkeypatch.setattr(service_module, "_validate_and_save_upload", forced_validate)
+
+    decoy_result = service_module.analyze_image(
+        db=db, upload=_FakeUpload("decoy.jpg"), raw_bytes=_make_test_jpeg_bytes()
+    )
+    assert decoy_result.tiger_status == "new"
+    decoy_tiger_id = decoy_result.tiger_id
+
+    # Second call reuses the identical forced image_id, so its
+    # embedding_path collides exactly with the decoy's DB row.
+    second_result = service_module.analyze_image(
+        db=db, upload=_FakeUpload("real.jpg"), raw_bytes=_make_test_jpeg_bytes()
+    )
+
+    matched_tiger_ids = [m.tiger_id for m in second_result.candidate_matches]
+    assert decoy_tiger_id not in matched_tiger_ids, (
+        "the path-collision guard should have excluded this row instead "
+        "of comparing the new embedding to itself"
+    )
+
+
 def test_get_analysis_result(client, mock_detection_with_animal):
     files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
     created = client.post("/api/analyze", files=files).json()

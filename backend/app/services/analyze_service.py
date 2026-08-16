@@ -132,12 +132,23 @@ def analyze_image(
     embedding_rel_path = _relative(embedding_path)
 
     # --- similarity vs. existing gallery (informational only) --------
+    #
+    # IMPORTANT: this query runs *before* the new Tiger/Sighting/Embedding
+    # rows are committed below, so the embedding we just computed cannot
+    # already be in `existing_embeddings` via the DB. We additionally
+    # guard by embedding_path (belt-and-suspenders) so that even if this
+    # ordering is ever changed by a future edit, the new embedding can
+    # never be compared against itself.
     candidate_matches: list[schemas.CandidateMatch] = []
     best_similarity: Optional[float] = None
 
     existing_embeddings = crud.get_all_embeddings(db)
     per_tiger_best: dict[str, float] = {}
     for existing in existing_embeddings:
+        if existing.embedding_path == embedding_rel_path:
+            # Defensive guard against self-comparison -- see note above.
+            continue
+
         existing_path = Path(existing.embedding_path)
         if not existing_path.is_absolute():
             existing_path = DATA_DIR / existing_path
