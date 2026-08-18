@@ -153,6 +153,17 @@ class AnalyzeResponse(BaseModel):
 
     candidate_matches: list[CandidateMatch] = []
 
+    # --- Re-ID decision engine ------------------------------------------
+    # Populated only for the automatic path (no caller-supplied tiger_id)
+    # when at least a detection was made. "AUTO_MATCH" | "REVIEW" |
+    # "POSSIBLE_NEW" | None (None = decision engine did not run, e.g. no
+    # animal detected, or the caller explicitly supplied tiger_id).
+    match_status: Optional[str] = None
+    matched_tiger_id: Optional[str] = None
+    best_similarity: Optional[float] = None
+    confidence: Optional[float] = None
+    review_required: bool = False
+
     note: str
 
 

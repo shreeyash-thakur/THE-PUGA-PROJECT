@@ -118,6 +118,10 @@ def mock_detection_no_animal(monkeypatch):
 
 
 def test_analyze_creates_new_tiger_when_animal_found(client, mock_detection_with_animal):
+    """With an empty gallery, best_similarity is None -> POSSIBLE_NEW.
+    Per the Re-ID decision engine spec, no tiger is auto-created and no
+    sighting is persisted for POSSIBLE_NEW; the caller gets the decision
+    plus the saved image/crop for a future human-review step."""
     files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
     resp = client.post("/api/analyze", files=files)
 
@@ -125,20 +129,15 @@ def test_analyze_creates_new_tiger_when_animal_found(client, mock_detection_with
     body = resp.json()
 
     assert body["animal_detected"] is True
-    assert body["tiger_status"] == "new"
-    assert body["tiger_id"].startswith("TIGER-")
-    assert body["sighting_id"] is not None
-    assert body["embedding_id"] is not None
+    assert body["match_status"] == "POSSIBLE_NEW"
+    assert body["review_required"] is True
+    assert body["matched_tiger_id"] is None
+    assert body["tiger_status"] is None
+    assert body["tiger_id"] is None
+    assert body["sighting_id"] is None
+    assert body["embedding_id"] is None
     assert body["crop_path"] is not None
     assert body["candidate_matches"] == []  # nothing in the gallery yet
-
-    # The tiger and sighting should be independently retrievable.
-    tiger_resp = client.get(f"/api/tigers/{body['tiger_id']}")
-    assert tiger_resp.status_code == 200
-    assert tiger_resp.json()["status"] == "unidentified"
-
-    sighting_resp = client.get(f"/api/sightings/{body['sighting_id']}")
-    assert sighting_resp.status_code == 200
 
 
 def test_analyze_no_animal_creates_no_records(client, mock_detection_no_animal):
@@ -151,6 +150,7 @@ def test_analyze_no_animal_creates_no_records(client, mock_detection_no_animal):
     assert body["animal_detected"] is False
     assert body["sighting_id"] is None
     assert body["tiger_id"] is None
+    assert body["match_status"] is None
     assert body["detections"] == FAKE_DETECTION_NO_ANIMAL
 
 
@@ -182,9 +182,11 @@ def test_analyze_rejects_non_image_file(client, mock_detection_with_animal):
     assert resp.status_code == 400
 
 
-def test_analyze_similarity_scoring_against_existing_gallery(client, monkeypatch):
-    """Two analyze calls with a fixed embedding should see each other in
-    candidate_matches with similarity 1.0 (identical fake embedding)."""
+def test_analyze_similarity_scoring_and_auto_match(client, monkeypatch):
+    """Seed a known tiger via an explicit-tiger_id analyze call (so its
+    embedding is actually persisted), then a second, automatic call with
+    an identical embedding should score similarity 1.0 against it and
+    the Re-ID decision engine should AUTO_MATCH it to that tiger."""
     fixed_embedding = torch.nn.functional.normalize(torch.ones(1, 1536), dim=1)
 
     monkeypatch.setattr(
@@ -194,16 +196,70 @@ def test_analyze_similarity_scoring_against_existing_gallery(client, monkeypatch
         ai_pipeline, "compute_embedding", lambda crop_image: fixed_embedding.clone()
     )
 
+    client.post("/api/tigers", json={"tiger_id": "TIGER-SEED", "name": "Seed"})
     files = {"file": ("tiger1.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
-    first = client.post("/api/analyze", files=files).json()
+    first = client.post(
+        "/api/analyze", files=files, data={"tiger_id": "TIGER-SEED"}
+    ).json()
+    assert first["tiger_status"] == "matched"
 
     files = {"file": ("tiger2.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
     second = client.post("/api/analyze", files=files).json()
 
     assert second["candidate_matches"], "expected at least one candidate match"
     match = second["candidate_matches"][0]
-    assert match["tiger_id"] == first["tiger_id"]
+    assert match["tiger_id"] == "TIGER-SEED"
     assert match["similarity_score"] == pytest.approx(1.0, abs=1e-3)
+
+    assert second["match_status"] == "AUTO_MATCH"
+    assert second["matched_tiger_id"] == "TIGER-SEED"
+    assert second["tiger_id"] == "TIGER-SEED"
+    assert second["tiger_status"] == "matched"
+    assert second["review_required"] is False
+    assert second["sighting_id"] is not None
+    assert second["embedding_id"] is not None
+
+
+def test_analyze_review_status_for_middle_similarity(client, monkeypatch):
+    """A best similarity strictly between REID_REVIEW_THRESHOLD and
+    REID_AUTO_MATCH_THRESHOLD must produce REVIEW, and REVIEW must NOT
+    assign or create any tiger (task requirement #8)."""
+    embedding_a = torch.zeros(1, 1536)
+    embedding_a[0, 0] = 1.0
+
+    # cosine_similarity(a, b) == 0.6 exactly -- between the default
+    # REVIEW_THRESHOLD (0.50) and AUTO_MATCH_THRESHOLD (0.75).
+    embedding_b = torch.zeros(1, 1536)
+    embedding_b[0, 0] = 0.6
+    embedding_b[0, 1] = 0.8
+
+    monkeypatch.setattr(
+        ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_WITH_ANIMAL
+    )
+
+    client.post("/api/tigers", json={"tiger_id": "TIGER-REVIEW-BASE"})
+    monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_a.clone())
+    files = {"file": ("base.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+    client.post("/api/analyze", files=files, data={"tiger_id": "TIGER-REVIEW-BASE"})
+
+    monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_b.clone())
+    files = {"file": ("candidate.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+    resp = client.post("/api/analyze", files=files)
+    assert resp.status_code == 201
+    body = resp.json()
+
+    assert body["candidate_matches"][0]["similarity_score"] == pytest.approx(0.6, abs=1e-3)
+    assert body["match_status"] == "REVIEW"
+    assert body["review_required"] is True
+    assert body["matched_tiger_id"] is None
+    assert body["tiger_id"] is None
+    assert body["tiger_status"] is None
+    assert body["sighting_id"] is None
+    assert body["embedding_id"] is None
+
+    # No new tiger was created, and the base tiger's rollup is untouched.
+    base = client.get("/api/tigers/TIGER-REVIEW-BASE").json()
+    assert base["total_sightings"] == 1
 
 
 class _FakeUpload:
@@ -253,12 +309,15 @@ def service_env(monkeypatch, tmp_path):
 
 def test_first_analyze_call_never_matches_itself(client, mock_detection_with_animal):
     """Regression test for the audited '1.0 similarity' report: with an
-    empty gallery, a brand-new tiger's own embedding must never appear in
-    its own candidate_matches."""
+    empty gallery, a brand-new sighting's own embedding must never appear
+    in its own candidate_matches (and, per the Re-ID decision engine,
+    an empty gallery -> POSSIBLE_NEW, so no tiger is assigned either)."""
     files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
     body = client.post("/api/analyze", files=files).json()
 
     assert body["candidate_matches"] == []
+    assert body["match_status"] == "POSSIBLE_NEW"
+    assert body["tiger_id"] is None
     assert body["tiger_id"] not in [m["tiger_id"] for m in body["candidate_matches"]]
 
 
@@ -266,7 +325,8 @@ def test_distinct_embeddings_do_not_score_as_identical(client, monkeypatch):
     """Sanity check for the opposite failure mode: two genuinely
     different embeddings must NOT be reported as a perfect match, proving
     the comparison logic still discriminates correctly (not just always
-    returning 1.0)."""
+    returning 1.0). Similarity 0.0 is well below REID_REVIEW_THRESHOLD,
+    so this should also decide POSSIBLE_NEW and not assign tiger A."""
     embedding_a = torch.zeros(1, 1536)
     embedding_a[0, 0] = 1.0  # unit vector along axis 0
 
@@ -277,9 +337,10 @@ def test_distinct_embeddings_do_not_score_as_identical(client, monkeypatch):
         ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_WITH_ANIMAL
     )
 
+    client.post("/api/tigers", json={"tiger_id": "TIGER-A"})
     monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_a.clone())
     files = {"file": ("tiger_a.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
-    client.post("/api/analyze", files=files)
+    client.post("/api/analyze", files=files, data={"tiger_id": "TIGER-A"})
 
     monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_b.clone())
     files = {"file": ("tiger_b.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
@@ -287,6 +348,8 @@ def test_distinct_embeddings_do_not_score_as_identical(client, monkeypatch):
 
     assert second["candidate_matches"], "expected a candidate match against tiger A"
     assert second["candidate_matches"][0]["similarity_score"] == pytest.approx(0.0, abs=1e-3)
+    assert second["match_status"] == "POSSIBLE_NEW"
+    assert second["tiger_id"] is None
 
 
 def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
@@ -304,7 +367,12 @@ def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
     `existing.embedding_path == embedding_rel_path` guard, this test
     fails (the decoy tiger would show up in candidate_matches at 1.0,
     because by the time it's compared its file has literally been
-    overwritten with the new call's embedding)."""
+    overwritten with the new call's embedding).
+
+    The decoy call uses an explicit tiger_id so its embedding is actually
+    persisted -- the Re-ID decision engine's automatic path (no
+    tiger_id) does not persist an embedding for REVIEW/POSSIBLE_NEW, so
+    it wouldn't otherwise be in the gallery for the collision to bite."""
     db, service_module = service_env
 
     fixed_embedding = torch.nn.functional.normalize(torch.full((1, 1536), 2.0), dim=1)
@@ -322,10 +390,16 @@ def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
 
     monkeypatch.setattr(service_module, "_validate_and_save_upload", forced_validate)
 
+    from app import crud, schemas as app_schemas
+
+    crud.create_tiger(db, app_schemas.TigerCreate(tiger_id="TIGER-DECOY", status="active"))
     decoy_result = service_module.analyze_image(
-        db=db, upload=_FakeUpload("decoy.jpg"), raw_bytes=_make_test_jpeg_bytes()
+        db=db,
+        upload=_FakeUpload("decoy.jpg"),
+        raw_bytes=_make_test_jpeg_bytes(),
+        tiger_id="TIGER-DECOY",
     )
-    assert decoy_result.tiger_status == "new"
+    assert decoy_result.tiger_status == "matched"
     decoy_tiger_id = decoy_result.tiger_id
 
     # Second call reuses the identical forced image_id, so its
@@ -339,11 +413,17 @@ def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
         "the path-collision guard should have excluded this row instead "
         "of comparing the new embedding to itself"
     )
+    # With the (correctly excluded) decoy as the only possible candidate,
+    # the gallery is effectively empty -> POSSIBLE_NEW.
+    assert second_result.match_status == "POSSIBLE_NEW"
 
 
 def test_get_analysis_result(client, mock_detection_with_animal):
+    client.post("/api/tigers", json={"tiger_id": "TIGER-GETRESULT"})
     files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
-    created = client.post("/api/analyze", files=files).json()
+    created = client.post(
+        "/api/analyze", files=files, data={"tiger_id": "TIGER-GETRESULT"}
+    ).json()
 
     resp = client.get(f"/api/analyze/{created['sighting_id']}")
     assert resp.status_code == 200

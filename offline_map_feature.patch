@@ -1,0 +1,909 @@
+diff --git a/frontend/package-lock.json b/frontend/package-lock.json
+index cd7af5b..53f3705 100644
+--- a/frontend/package-lock.json
++++ b/frontend/package-lock.json
+@@ -46,6 +46,7 @@
+         "embla-carousel-react": "^8.6.0",
+         "input-otp": "^1.4.2",
+         "leaflet": "^1.9.4",
++        "leaflet.offline": "^3.2.1",
+         "lucide-react": "^0.575.0",
+         "react": "^19.2.0",
+         "react-day-picker": "^9.14.0",
+@@ -2270,9 +2271,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2289,9 +2287,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2308,9 +2303,6 @@
+       "cpu": [
+         "ppc64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2327,9 +2319,6 @@
+       "cpu": [
+         "s390x"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2346,9 +2335,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2365,9 +2351,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2572,9 +2555,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2591,9 +2571,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2610,9 +2587,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2629,9 +2603,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -3727,8 +3698,9 @@
+       "version": "8.20.0",
+       "resolved": "https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz",
+       "integrity": "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==",
+-      "extraneous": true,
+       "license": "MIT",
++      "optional": true,
++      "peer": true,
+       "dependencies": {
+         "fast-deep-equal": "^3.1.3",
+         "fast-uri": "^3.0.1",
+@@ -4684,7 +4656,6 @@
+       "version": "3.1.5",
+       "resolved": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.5.tgz",
+       "integrity": "sha512-gHwA1O9LDIcKunMKhObS/HimwtehO1nPUECKAu5TpKgaO19fcWEl4bliWe1jWxVFvIXztJjjQ4L8XQ1EU9f7Jw==",
+-      "extraneous": true,
+       "funding": [
+         {
+           "type": "github",
+@@ -4695,7 +4666,9 @@
+           "url": "https://opencollective.com/fastify"
+         }
+       ],
+-      "license": "BSD-3-Clause"
++      "license": "BSD-3-Clause",
++      "optional": true,
++      "peer": true
+     },
+     "node_modules/fdir": {
+       "version": "6.5.0",
+@@ -4935,6 +4908,12 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/idb": {
++      "version": "8.0.3",
++      "resolved": "https://registry.npmjs.org/idb/-/idb-8.0.3.tgz",
++      "integrity": "sha512-LtwtVyVYO5BqRvcsKuB2iUMnHwPVByPCXFXOpuU96IZPPoPN6xjOGxZQ74pgSVVLQWtUOYgyeL4GE98BY5D3wg==",
++      "license": "ISC"
++    },
+     "node_modules/ignore": {
+       "version": "5.3.2",
+       "resolved": "https://registry.npmjs.org/ignore/-/ignore-5.3.2.tgz",
+@@ -5090,8 +5069,9 @@
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-1.0.0.tgz",
+       "integrity": "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==",
+-      "extraneous": true,
+-      "license": "MIT"
++      "license": "MIT",
++      "optional": true,
++      "peer": true
+     },
+     "node_modules/json-stable-stringify-without-jsonify": {
+       "version": "1.0.1",
+@@ -5128,6 +5108,19 @@
+       "integrity": "sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA==",
+       "license": "BSD-2-Clause"
+     },
++    "node_modules/leaflet.offline": {
++      "version": "3.2.1",
++      "resolved": "https://registry.npmjs.org/leaflet.offline/-/leaflet.offline-3.2.1.tgz",
++      "integrity": "sha512-bZUAMiHxWXhjIBiWmog1DjRbiOvTv2wmCUtEI8hdohjhfPreNxW69HukFPal52TPtakyVvyxzTUCqKsnF2bBZw==",
++      "license": "ISC",
++      "dependencies": {
++        "idb": "^8.0.2",
++        "leaflet": "^1.6.0"
++      },
++      "engines": {
++        "node": ">=16"
++      }
++    },
+     "node_modules/levn": {
+       "version": "0.4.1",
+       "resolved": "https://registry.npmjs.org/levn/-/levn-0.4.1.tgz",
+@@ -5278,9 +5271,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -5301,9 +5291,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -5324,9 +5311,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -5347,9 +5331,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -5591,8 +5572,10 @@
+       "version": "11.5.2",
+       "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.2.tgz",
+       "integrity": "sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==",
+-      "extraneous": true,
++      "dev": true,
+       "license": "BlueOak-1.0.0",
++      "optional": true,
++      "peer": true,
+       "engines": {
+         "node": "20 || >=22"
+       }
+@@ -6191,8 +6174,9 @@
+       "version": "2.0.2",
+       "resolved": "https://registry.npmjs.org/require-from-string/-/require-from-string-2.0.2.tgz",
+       "integrity": "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==",
+-      "extraneous": true,
+       "license": "MIT",
++      "optional": true,
++      "peer": true,
+       "engines": {
+         "node": ">=0.10.0"
+       }
+@@ -6980,9 +6964,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -7003,9 +6984,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -7026,9 +7004,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -7049,9 +7024,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+diff --git a/frontend/package.json b/frontend/package.json
+index 0d8f5d8..7ce3099 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -52,6 +52,7 @@
+     "embla-carousel-react": "^8.6.0",
+     "input-otp": "^1.4.2",
+     "leaflet": "^1.9.4",
++    "leaflet.offline": "^3.2.1",
+     "lucide-react": "^0.575.0",
+     "react": "^19.2.0",
+     "react-day-picker": "^9.14.0",
+diff --git a/frontend/src/components/MapOfflineControls.tsx b/frontend/src/components/MapOfflineControls.tsx
+new file mode 100644
+index 0000000..c0d184a
+--- /dev/null
++++ b/frontend/src/components/MapOfflineControls.tsx
+@@ -0,0 +1,171 @@
++import { useEffect, useMemo, useRef, useState } from "react";
++import { useMap } from "react-leaflet";
++import L from "leaflet";
++import type { TileLayerOffline } from "leaflet.offline";
++import { CloudDownload, Trash2, Wifi, WifiOff } from "lucide-react";
++import { toast } from "sonner";
++import { Badge } from "@/components/ui/badge";
++import { Button } from "@/components/ui/button";
++import { Progress } from "@/components/ui/progress";
++import { useOnlineStatus } from "@/hooks/use-online-status";
++import {
++  DEFAULT_EXTRA_ZOOM_LEVELS,
++  clearTileCache,
++  formatBytes,
++  getTileCacheStats,
++  saveAreaForOffline,
++  type SaveAreaProgress,
++} from "@/lib/puga/offline-tiles";
++
++export interface MapOfflineControlsProps {
++  layer: TileLayerOffline | null;
++  urlTemplate: string;
++  maxZoom: number;
++}
++
++/** Floating panel over the reserve map for caching tiles for offline
++ * field use: shows whether the browser currently has a connection, how
++ * many tiles are already cached, and lets a ranger cache the area
++ * they're currently viewing before heading out. */
++export function MapOfflineControls({ layer, urlTemplate, maxZoom }: MapOfflineControlsProps) {
++  const map = useMap();
++  const isOnline = useOnlineStatus();
++  const containerRef = useRef<HTMLDivElement>(null);
++
++  const [stats, setStats] = useState<{ count: number; bytes: number } | null>(null);
++  const [saving, setSaving] = useState(false);
++  const [progress, setProgress] = useState<SaveAreaProgress | null>(null);
++
++  // Clicks/drags on this panel shouldn't pan or zoom the map underneath it.
++  useEffect(() => {
++    const el = containerRef.current;
++    if (!el) return;
++    L.DomEvent.disableClickPropagation(el);
++    L.DomEvent.disableScrollPropagation(el);
++  }, []);
++
++  const refreshStats = useMemo(
++    () => async () => {
++      try {
++        setStats(await getTileCacheStats(urlTemplate));
++      } catch {
++        // IndexedDB unavailable (e.g. private browsing) — cache features
++        // just stay disabled/unknown rather than breaking the map.
++        setStats(null);
++      }
++    },
++    [urlTemplate],
++  );
++
++  useEffect(() => {
++    void refreshStats();
++  }, [refreshStats]);
++
++  async function handleSave() {
++    if (!layer || saving) return;
++    setSaving(true);
++    setProgress(null);
++    try {
++      const zoom = map.getZoom();
++      const result = await saveAreaForOffline({
++        map,
++        layer,
++        bounds: map.getBounds(),
++        minZoom: zoom,
++        maxZoom: Math.min(zoom + DEFAULT_EXTRA_ZOOM_LEVELS, maxZoom),
++        onProgress: setProgress,
++      });
++
++      if (result.saved === 0 && result.failed > 0) {
++        toast.error("Couldn't cache this area — check your connection and try again.");
++      } else {
++        toast.success(
++          result.failed > 0
++            ? `Cached ${result.saved} tiles for offline use (${result.failed} failed).`
++            : `Cached ${result.saved} tiles for offline use.`,
++          result.truncated
++            ? {
++                description: `Zoomed area was large — capped at ${result.saved + result.failed} tiles.`,
++              }
++            : undefined,
++        );
++      }
++      await refreshStats();
++    } catch (err) {
++      toast.error(err instanceof Error ? err.message : "Couldn't save this area for offline use.");
++    } finally {
++      setSaving(false);
++      setProgress(null);
++    }
++  }
++
++  async function handleClear() {
++    if (typeof window !== "undefined" && !window.confirm("Clear all cached offline map tiles?")) {
++      return;
++    }
++    try {
++      await clearTileCache();
++      await refreshStats();
++      toast.success("Cleared cached map tiles.");
++    } catch {
++      toast.error("Couldn't clear cached tiles.");
++    }
++  }
++
++  return (
++    <div
++      ref={containerRef}
++      className="absolute right-2 top-2 z-[1000] flex w-56 flex-col gap-2 rounded-lg border border-border bg-background/95 p-2.5 text-xs shadow-md backdrop-blur"
++    >
++      <div className="flex items-center justify-between gap-2">
++        <Badge
++          variant={isOnline ? "secondary" : "outline"}
++          className="flex items-center gap-1 border-warning/40 text-[11px]"
++        >
++          {isOnline ? <Wifi className="size-3" /> : <WifiOff className="size-3 text-warning" />}
++          {isOnline ? "Online" : "Offline — using cached tiles"}
++        </Badge>
++      </div>
++
++      <div className="text-muted-foreground">
++        {stats
++          ? `${stats.count} tile${stats.count === 1 ? "" : "s"} cached (${formatBytes(stats.bytes)})`
++          : "Offline tile cache unavailable"}
++      </div>
++
++      {saving && progress ? (
++        <div className="space-y-1">
++          <Progress value={progress.total ? (progress.loaded / progress.total) * 100 : 0} />
++          <div className="text-[11px] text-muted-foreground">
++            Saving tiles… {progress.loaded}/{progress.total}
++          </div>
++        </div>
++      ) : null}
++
++      <div className="flex gap-2">
++        <Button
++          type="button"
++          size="sm"
++          variant="secondary"
++          className="h-7 flex-1 gap-1 px-2 text-[11px]"
++          disabled={!layer || saving || !isOnline}
++          onClick={handleSave}
++          title={!isOnline ? "Connect once to cache this view, then it works offline" : undefined}
++        >
++          <CloudDownload className="size-3" />
++          {saving ? "Saving…" : "Save this view"}
++        </Button>
++        <Button
++          type="button"
++          size="sm"
++          variant="outline"
++          className="h-7 gap-1 px-2 text-[11px]"
++          disabled={!stats || stats.count === 0}
++          onClick={handleClear}
++        >
++          <Trash2 className="size-3" />
++        </Button>
++      </div>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/OfflineTileLayer.tsx b/frontend/src/components/OfflineTileLayer.tsx
+new file mode 100644
+index 0000000..34b5946
+--- /dev/null
++++ b/frontend/src/components/OfflineTileLayer.tsx
+@@ -0,0 +1,60 @@
++import { useEffect, useRef } from "react";
++import { useMap } from "react-leaflet";
++import { tileLayerOffline } from "leaflet.offline";
++import type { TileLayerOffline } from "leaflet.offline";
++import type { TileLayerOptions } from "leaflet";
++
++export interface OfflineTileLayerProps {
++  url: string;
++  attribution: string;
++  minZoom?: number;
++  maxZoom?: number;
++  /** Fired once the underlying leaflet.offline layer is created and
++   * attached to the map, so a parent (ReserveMap) can hand it to the
++   * "save this view offline" controls without also owning the map
++   * instance. */
++  onLayerReady?: (layer: TileLayerOffline | null) => void;
++}
++
++/**
++ * Drop-in replacement for react-leaflet's `<TileLayer>` that reads tiles
++ * from IndexedDB first (via leaflet.offline) and only hits the network
++ * for tiles that haven't been cached yet — see lib/puga/offline-tiles.ts
++ * for how tiles get cached in the first place.
++ *
++ * leaflet.offline doesn't ship a react-leaflet binding, so this manages
++ * the underlying Leaflet layer imperatively with useMap()/useEffect,
++ * the same pattern react-leaflet itself uses internally for TileLayer.
++ */
++export function OfflineTileLayer({
++  url,
++  attribution,
++  minZoom,
++  maxZoom,
++  onLayerReady,
++}: OfflineTileLayerProps) {
++  const map = useMap();
++  const layerRef = useRef<TileLayerOffline | null>(null);
++
++  useEffect(() => {
++    const options: TileLayerOptions = { attribution };
++    if (minZoom !== undefined) options.minZoom = minZoom;
++    if (maxZoom !== undefined) options.maxZoom = maxZoom;
++
++    const layer = tileLayerOffline(url, options);
++    layer.addTo(map);
++    layerRef.current = layer;
++    onLayerReady?.(layer);
++
++    return () => {
++      map.removeLayer(layer);
++      layerRef.current = null;
++      onLayerReady?.(null);
++    };
++    // Re-create the layer only if the map instance or tile source
++    // changes; attribution/zoom tweaks aren't expected at runtime here.
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [map, url]);
++
++  return null;
++}
+diff --git a/frontend/src/components/ReserveMap.tsx b/frontend/src/components/ReserveMap.tsx
+index bcfac31..cd8d831 100644
+--- a/frontend/src/components/ReserveMap.tsx
++++ b/frontend/src/components/ReserveMap.tsx
+@@ -1,12 +1,21 @@
++import { useState } from "react";
+ import "leaflet/dist/leaflet.css";
+ import L from "leaflet";
+-import { CircleMarker, MapContainer, Polygon, Popup, TileLayer, Tooltip } from "react-leaflet";
++import { CircleMarker, MapContainer, Polygon, Popup, Tooltip } from "react-leaflet";
++import type { TileLayerOffline } from "leaflet.offline";
+ import type { Camera } from "@/lib/puga/types";
+ import type { Occupancy } from "@/lib/puga/occupancy";
++import { MapOfflineControls } from "./MapOfflineControls";
++import { OfflineTileLayer } from "./OfflineTileLayer";
+ 
+ // Avoid the default marker-icon 404s; we only draw vector markers.
+ L.Marker.prototype.options.icon = L.divIcon({ className: "hidden" });
+ 
++const OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
++const OSM_ATTRIBUTION =
++  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
++const OSM_MAX_ZOOM = 19;
++
+ const RANGE_COLORS = [
+   "#f0a03c",
+   "#4fbf8b",
+@@ -39,72 +48,83 @@ export default function ReserveMap({
+   zoom = 11,
+   height = 520,
+ }: ReserveMapProps) {
++  const [offlineLayer, setOfflineLayer] = useState<TileLayerOffline | null>(null);
++
+   return (
+-    <MapContainer
+-      center={center}
+-      zoom={zoom}
+-      style={{ height, width: "100%", borderRadius: "0.75rem" }}
+-      scrollWheelZoom
+-    >
+-      <TileLayer
+-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+-      />
++    <div className="relative" style={{ height, width: "100%" }}>
++      <MapContainer
++        center={center}
++        zoom={zoom}
++        style={{ height: "100%", width: "100%", borderRadius: "0.75rem" }}
++        scrollWheelZoom
++      >
++        <OfflineTileLayer
++          url={OSM_TILE_URL}
++          attribution={OSM_ATTRIBUTION}
++          maxZoom={OSM_MAX_ZOOM}
++          onLayerReady={setOfflineLayer}
++        />
++        <MapOfflineControls
++          layer={offlineLayer}
++          urlTemplate={OSM_TILE_URL}
++          maxZoom={OSM_MAX_ZOOM}
++        />
+ 
+-      {ranges.map((r, i) => {
+-        const color = RANGE_COLORS[i % RANGE_COLORS.length]!;
+-        return (
+-          <span key={r.tiger_id}>
+-            {r.hull.length >= 3 ? (
+-              <Polygon
+-                positions={r.hull.map((p) => [p.lat, p.lng] as [number, number])}
+-                pathOptions={{ color, fillColor: color, fillOpacity: 0.16, weight: 2 }}
+-              >
+-                <Tooltip sticky>
+-                  {r.tiger_id} — {r.areaKm2.toFixed(1)} km² MCP, {r.sightings} captures
+-                </Tooltip>
+-              </Polygon>
+-            ) : null}
+-            {r.centroid ? (
+-              <CircleMarker
+-                center={[r.centroid.lat, r.centroid.lng]}
+-                radius={7}
+-                pathOptions={{ color, fillColor: color, fillOpacity: 0.95, weight: 2 }}
+-              >
+-                <Popup>
+-                  <strong>{r.tiger_id}</strong>
+-                  <br />
+-                  Centroid {r.centroid.lat.toFixed(4)}, {r.centroid.lng.toFixed(4)}
+-                  <br />
+-                  {r.stations.length} stations · {r.areaKm2.toFixed(1)} km²
+-                </Popup>
+-              </CircleMarker>
+-            ) : null}
+-          </span>
+-        );
+-      })}
++        {ranges.map((r, i) => {
++          const color = RANGE_COLORS[i % RANGE_COLORS.length]!;
++          return (
++            <span key={r.tiger_id}>
++              {r.hull.length >= 3 ? (
++                <Polygon
++                  positions={r.hull.map((p) => [p.lat, p.lng] as [number, number])}
++                  pathOptions={{ color, fillColor: color, fillOpacity: 0.16, weight: 2 }}
++                >
++                  <Tooltip sticky>
++                    {r.tiger_id} — {r.areaKm2.toFixed(1)} km² MCP, {r.sightings} captures
++                  </Tooltip>
++                </Polygon>
++              ) : null}
++              {r.centroid ? (
++                <CircleMarker
++                  center={[r.centroid.lat, r.centroid.lng]}
++                  radius={7}
++                  pathOptions={{ color, fillColor: color, fillOpacity: 0.95, weight: 2 }}
++                >
++                  <Popup>
++                    <strong>{r.tiger_id}</strong>
++                    <br />
++                    Centroid {r.centroid.lat.toFixed(4)}, {r.centroid.lng.toFixed(4)}
++                    <br />
++                    {r.stations.length} stations · {r.areaKm2.toFixed(1)} km²
++                  </Popup>
++                </CircleMarker>
++              ) : null}
++            </span>
++          );
++        })}
+ 
+-      {cameras.map((c) => (
+-        <CircleMarker
+-          key={c.camera_id}
+-          center={[c.latitude, c.longitude]}
+-          radius={4}
+-          pathOptions={{
+-            color: ZONE_COLOR[c.zone],
+-            fillColor: ZONE_COLOR[c.zone],
+-            fillOpacity: 0.9,
+-            weight: 1,
+-          }}
+-        >
+-          <Popup>
+-            <strong>{c.camera_id}</strong>
+-            <br />
+-            {c.name} · {c.zone}
+-            <br />
+-            Installed {c.installed_at}
+-          </Popup>
+-        </CircleMarker>
+-      ))}
+-    </MapContainer>
++        {cameras.map((c) => (
++          <CircleMarker
++            key={c.camera_id}
++            center={[c.latitude, c.longitude]}
++            radius={4}
++            pathOptions={{
++              color: ZONE_COLOR[c.zone],
++              fillColor: ZONE_COLOR[c.zone],
++              fillOpacity: 0.9,
++              weight: 1,
++            }}
++          >
++            <Popup>
++              <strong>{c.camera_id}</strong>
++              <br />
++              {c.name} · {c.zone}
++              <br />
++              Installed {c.installed_at}
++            </Popup>
++          </CircleMarker>
++        ))}
++      </MapContainer>
++    </div>
+   );
+ }
+diff --git a/frontend/src/hooks/use-online-status.ts b/frontend/src/hooks/use-online-status.ts
+new file mode 100644
+index 0000000..015f10a
+--- /dev/null
++++ b/frontend/src/hooks/use-online-status.ts
+@@ -0,0 +1,25 @@
++import * as React from "react";
++
++/** Tracks the browser's connectivity (navigator.onLine + the online/
++ * offline events). This reflects whether the *device* has a network
++ * link at all — it says nothing about whether the PUGA backend itself
++ * is reachable (see `useDataset`'s "live"/"offline" dataset source for
++ * that). Used to explain why the map is showing cached tiles / a stale
++ * dataset instead of failing silently. */
++export function useOnlineStatus(): boolean {
++  const [isOnline, setIsOnline] = React.useState(true);
++
++  React.useEffect(() => {
++    setIsOnline(navigator.onLine);
++    const handleOnline = () => setIsOnline(true);
++    const handleOffline = () => setIsOnline(false);
++    window.addEventListener("online", handleOnline);
++    window.addEventListener("offline", handleOffline);
++    return () => {
++      window.removeEventListener("online", handleOnline);
++      window.removeEventListener("offline", handleOffline);
++    };
++  }, []);
++
++  return isOnline;
++}
+diff --git a/frontend/src/lib/puga/offline-tiles.ts b/frontend/src/lib/puga/offline-tiles.ts
+new file mode 100644
+index 0000000..5b307de
+--- /dev/null
++++ b/frontend/src/lib/puga/offline-tiles.ts
+@@ -0,0 +1,152 @@
++import L from "leaflet";
++import {
++  downloadTile,
++  getStorageInfo,
++  saveTile,
++  truncate as truncateStoredTiles,
++} from "leaflet.offline";
++import type { TileInfo } from "leaflet.offline";
++import type { TileLayerOffline } from "leaflet.offline";
++
++/**
++ * Offline map-tile caching for the reserve map.
++ *
++ * The reserve is often surveyed with no signal, so the map should keep
++ * showing camera stations and tiger ranges even without a connection.
++ * `ReserveMap` renders an offline-capable tile layer (see
++ * `OfflineTileLayer.tsx`) that reads tiles from IndexedDB first and only
++ * falls back to the network when a tile hasn't been cached yet. This
++ * module is the imperative half: downloading a bounded area of tiles
++ * ahead of time ("save this view for offline use"), and reporting/
++ * clearing what's already cached.
++ *
++ * Caveat worth keeping in mind: OpenStreetMap's tile usage policy
++ * (https://operations.osmfoundation.org/policies/tiles/) discourages
++ * bulk/automated tile scraping. `saveAreaForOffline` is meant for a
++ * person caching the modest area they're about to patrol, not for
++ * pre-downloading the whole reserve — see MAX_TILES_PER_SAVE below. For
++ * heavier offline coverage, point `url` at a self-hosted tile server
++ * instead.
++ */
++
++/** Hard cap on how many tiles a single "save this view" action will
++ * fetch, regardless of the requested zoom range — keeps casual use well
++ * within reasonable, non-bulk tile usage. */
++export const MAX_TILES_PER_SAVE = 400;
++
++/** How many zoom levels above the current one to include by default
++ * when saving the current view (deeper zoom = sharper but many more
++ * tiles: each extra level is ~4x the tiles of the one before it). */
++export const DEFAULT_EXTRA_ZOOM_LEVELS = 2;
++
++export interface SaveAreaProgress {
++  loaded: number;
++  total: number;
++}
++
++export interface SaveAreaResult {
++  requested: number;
++  saved: number;
++  failed: number;
++  /** True if the requested area/zoom range was clamped to stay under
++   * MAX_TILES_PER_SAVE. */
++  truncated: boolean;
++}
++
++export interface SaveAreaOptions {
++  map: L.Map;
++  layer: TileLayerOffline;
++  bounds: L.LatLngBounds;
++  minZoom: number;
++  maxZoom: number;
++  concurrency?: number;
++  onProgress?: (progress: SaveAreaProgress) => void;
++  signal?: AbortSignal;
++}
++
++/** Downloads and caches every tile covering `bounds` for each zoom level
++ * in [minZoom, maxZoom], using the same tile URLs the map would request
++ * live. Already-cached tiles are re-downloaded (cheap: browser HTTP
++ * cache usually short-circuits it) so "save" also doubles as "refresh". */
++export async function saveAreaForOffline({
++  map,
++  layer,
++  bounds,
++  minZoom,
++  maxZoom,
++  concurrency = 6,
++  onProgress,
++  signal,
++}: SaveAreaOptions): Promise<SaveAreaResult> {
++  let tiles: TileInfo[] = [];
++  for (let zoom = minZoom; zoom <= maxZoom; zoom += 1) {
++    const area = L.bounds(
++      map.project(bounds.getNorthWest(), zoom),
++      map.project(bounds.getSouthEast(), zoom),
++    );
++    tiles = tiles.concat(layer.getTileUrls(area, zoom));
++  }
++
++  const requested = tiles.length;
++  const truncated = tiles.length > MAX_TILES_PER_SAVE;
++  if (truncated) {
++    tiles = tiles.slice(0, MAX_TILES_PER_SAVE);
++  }
++
++  const total = tiles.length;
++  let loaded = 0;
++  let saved = 0;
++  let failed = 0;
++  onProgress?.({ loaded: 0, total });
++
++  const queue = [...tiles];
++
++  async function worker() {
++    for (;;) {
++      if (signal?.aborted) return;
++      const tile = queue.shift();
++      if (!tile) return;
++      try {
++        const blob = await downloadTile(tile.url);
++        await saveTile(tile, blob);
++        saved += 1;
++      } catch {
++        failed += 1;
++      } finally {
++        loaded += 1;
++        onProgress?.({ loaded, total });
++      }
++    }
++  }
++
++  await Promise.all(Array.from({ length: Math.min(concurrency, total) || 1 }, worker));
++
++  return { requested, saved, failed, truncated };
++}
++
++export interface TileCacheStats {
++  count: number;
++  bytes: number;
++}
++
++/** Reads how many tiles (and roughly how many bytes) are already cached
++ * for a given tile URL template. */
++export async function getTileCacheStats(urlTemplate: string): Promise<TileCacheStats> {
++  const stored = await getStorageInfo(urlTemplate);
++  const bytes = stored.reduce((sum, tile) => sum + (tile.blob?.size ?? 0), 0);
++  return { count: stored.length, bytes };
++}
++
++/** Clears every cached tile (all tile sources — this app only ever uses
++ * one, so scoping further isn't necessary). */
++export async function clearTileCache(): Promise<void> {
++  await truncateStoredTiles();
++}
++
++export function formatBytes(bytes: number): string {
++  if (bytes <= 0) return "0 B";
++  const units = ["B", "KB", "MB", "GB"];
++  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
++  const value = bytes / 1024 ** exponent;
++  return `${exponent === 0 ? value : value.toFixed(1)} ${units[exponent]}`;
++}
