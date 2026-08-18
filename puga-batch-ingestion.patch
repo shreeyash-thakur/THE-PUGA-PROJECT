@@ -1,0 +1,981 @@
+diff --git a/backend/README.md b/backend/README.md
+index a8a3ca3..18a1df7 100644
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -94,6 +94,35 @@ Response highlights:
+ `GET /api/analyze/{sighting_id}` returns the combined sighting + tiger +
+ embedding record produced by a previous analyze call.
+ 
++## Batch ingestion (`/api/batch`)
++
++Processes a whole raw camera-trap folder at once, reusing `/api/analyze`'s
++pipeline per file -- no logic is duplicated.
++
++- **Default folder**: `D:\penchimages` (override with the
++  `PUGA_RAW_IMAGES_DIR` env var, or pass `"folder"` in the request body).
++- `POST /api/batch/analyze` `{folder?, camera_id?, recursive?, limit?}` --
++  scans the folder, dedupes by file content hash (so a copied/renamed
++  duplicate from a mixed-up SD card is recognized), and for each new file:
++  - **no animal detected** -> the *original* file is moved (never deleted)
++    to `data/quarantine/{batch_id}/`, status `quarantined`.
++  - **animal detected** -> routed through the same AUTO_MATCH / REVIEW /
++    POSSIBLE_NEW decision as a single `/api/analyze` call; `processed` if
++    a sighting was created, `needs_review` otherwise. Original file is
++    left in place.
++  - Any per-file error (bad image, AI deps missing, etc.) is caught and
++    recorded as `failed` on that file only -- one bad file never aborts
++    the whole batch.
++  - Already-seen files (matched by hash, from any earlier batch) are
++    skipped and marked `duplicate`, so re-running against the same folder
++    is safe/idempotent.
++- `GET /api/batch` -- list all batch_ids run so far.
++- `GET /api/batch/{batch_id}` -- summary + per-file results for one run.
++- `GET /api/batch/config` -- shows the currently configured raw-images folder.
++- `GET /api/batch/quarantine` -- list all quarantined (blank) images.
++- `POST /api/batch/quarantine/{id}/restore` -- move a quarantined file back
++  to its original location (409 if something already exists there).
++
+ ## Tests
+ 
+ ```bash
+diff --git a/backend/app/config.py b/backend/app/config.py
+index 3bd8146..a6e8f20 100644
+--- a/backend/app/config.py
++++ b/backend/app/config.py
+@@ -81,6 +81,22 @@ class ReIDSettings:
+             )
+ 
+ 
++# ---------------------------------------------------------------------------
++# Batch ingestion (raw camera-trap folder -> quarantine / analyze pipeline)
++# ---------------------------------------------------------------------------
++#
++# The folder the field SD-card images get copied into for processing.
++# Override with the PUGA_RAW_IMAGES_DIR environment variable if your
++# images live somewhere else, e.g.:
++#   PUGA_RAW_IMAGES_DIR=E:\camera_trap_data uvicorn app.main:app
++DEFAULT_RAW_IMAGES_DIR = r"D:\penchimages"
++_RAW_IMAGES_DIR_ENV_VAR = "PUGA_RAW_IMAGES_DIR"
++
++
++def get_raw_images_dir() -> str:
++    return os.getenv(_RAW_IMAGES_DIR_ENV_VAR, DEFAULT_RAW_IMAGES_DIR)
++
++
+ def get_reid_settings() -> ReIDSettings:
+     """Read + validate the Re-ID thresholds from the environment.
+ 
+diff --git a/backend/app/crud.py b/backend/app/crud.py
+index e35ae19..5933b84 100644
+--- a/backend/app/crud.py
++++ b/backend/app/crud.py
+@@ -184,3 +184,89 @@ def generate_unique_tiger_id(db: Session) -> str:
+         candidate = f"TIGER-{uuid.uuid4().hex[:6].upper()}"
+         if get_tiger(db, candidate) is None:
+             return candidate
++
++
++# ---------------------------------------------------------------------------
++# Batch ingestion
++# ---------------------------------------------------------------------------
++
++def create_batch_image(
++    db: Session,
++    *,
++    batch_id: str,
++    original_path: str,
++    filename: str,
++    file_hash: str,
++    status: str = "pending",
++) -> models.BatchImage:
++    row = models.BatchImage(
++        batch_id=batch_id,
++        original_path=original_path,
++        filename=filename,
++        file_hash=file_hash,
++        status=status,
++    )
++    db.add(row)
++    db.commit()
++    db.refresh(row)
++    return row
++
++
++def update_batch_image(db: Session, row: models.BatchImage, **fields) -> models.BatchImage:
++    for key, value in fields.items():
++        setattr(row, key, value)
++    row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
++    db.commit()
++    db.refresh(row)
++    return row
++
++
++def find_batch_image_by_hash(db: Session, file_hash: str) -> Optional[models.BatchImage]:
++    """Most recent row (any batch) for this content hash that reached a
++    terminal state -- used to detect duplicate files (e.g. a mixed-up SD
++    card) so we don't reprocess the same photo twice."""
++    return (
++        db.query(models.BatchImage)
++        .filter(
++            models.BatchImage.file_hash == file_hash,
++            models.BatchImage.status.in_(
++                ["processed", "needs_review", "quarantined"]
++            ),
++        )
++        .order_by(models.BatchImage.id.desc())
++        .first()
++    )
++
++
++def get_batch_image(db: Session, image_row_id: int) -> Optional[models.BatchImage]:
++    return db.query(models.BatchImage).filter(models.BatchImage.id == image_row_id).first()
++
++
++def get_batch_images(db: Session, batch_id: str) -> List[models.BatchImage]:
++    return (
++        db.query(models.BatchImage)
++        .filter(models.BatchImage.batch_id == batch_id)
++        .order_by(models.BatchImage.id)
++        .all()
++    )
++
++
++def list_batch_ids(db: Session) -> List[str]:
++    rows = (
++        db.query(models.BatchImage.batch_id)
++        .distinct()
++        .order_by(models.BatchImage.batch_id.desc())
++        .all()
++    )
++    return [r[0] for r in rows]
++
++
++def list_quarantined_images(db: Session, skip: int = 0, limit: int = 100) -> List[models.BatchImage]:
++    return (
++        db.query(models.BatchImage)
++        .filter(models.BatchImage.status == "quarantined")
++        .order_by(models.BatchImage.id.desc())
++        .offset(skip)
++        .limit(limit)
++        .all()
++    )
+diff --git a/backend/app/main.py b/backend/app/main.py
+index b5bdf0b..c8b7865 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -4,7 +4,7 @@ from fastapi import FastAPI
+ from fastapi.middleware.cors import CORSMiddleware
+ 
+ from app.database import init_storage, DATABASE_PATH
+-from app.routers import tigers, sightings, cameras, analyze
++from app.routers import tigers, sightings, cameras, analyze, batch
+ from app.schemas import Health
+ 
+ ALLOWED_ORIGINS = [
+@@ -41,6 +41,7 @@ app.include_router(tigers.router)
+ app.include_router(sightings.router)
+ app.include_router(cameras.router)
+ app.include_router(analyze.router)
++app.include_router(batch.router)
+ 
+ 
+ @app.get("/api/health", response_model=Health, tags=["health"])
+diff --git a/backend/app/models.py b/backend/app/models.py
+index 50ff97f..c2dc953 100644
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -144,3 +144,39 @@ class Embedding(Base):
+     __table_args__ = (
+         UniqueConstraint("sighting_id", name="uq_embedding_sighting"),
+     )
++
++
++class BatchImage(Base):
++    """One row per raw image file seen by a batch ingestion run
++    (POST /api/batch/analyze). This is the audit trail for item 1
++    (safe/reversible blank filtering) and lets a run resume/skip files
++    it already handled -- keyed by content hash, not just filename, so a
++    duplicated file (mixed-up SD card) is recognized even under a
++    different name."""
++
++    __tablename__ = "batch_images"
++
++    id = Column(Integer, primary_key=True, index=True)
++    batch_id = Column(String, index=True, nullable=False)
++
++    original_path = Column(String, nullable=False)  # absolute source path
++    filename = Column(String, nullable=False)
++    file_hash = Column(String, index=True, nullable=False)  # sha256 of file bytes
++
++    # pending | processed | needs_review | quarantined | duplicate | failed
++    status = Column(String, nullable=False, default="pending")
++
++    sighting_id = Column(String, ForeignKey("sightings.sighting_id"), nullable=True)
++    tiger_id = Column(String, ForeignKey("tigers.tiger_id"), nullable=True)
++    match_status = Column(String, nullable=True)  # AUTO_MATCH/REVIEW/POSSIBLE_NEW
++    best_similarity = Column(Float, nullable=True)
++
++    crop_path = Column(String, nullable=True)
++    embedding_path = Column(String, nullable=True)
++
++    quarantine_path = Column(String, nullable=True)  # set only when status=quarantined
++    reason = Column(String, nullable=True)
++    error = Column(String, nullable=True)  # set only when status=failed
++
++    created_at = Column(DateTime, default=_now, nullable=False)
++    updated_at = Column(DateTime, default=_now, onupdate=_now, nullable=False)
+diff --git a/backend/app/routers/batch.py b/backend/app/routers/batch.py
+new file mode 100644
+index 0000000..2fd5968
+--- /dev/null
++++ b/backend/app/routers/batch.py
+@@ -0,0 +1,90 @@
++"""HTTP layer for offline batch ingestion + quarantine management.
++
++Business logic lives in app.services.batch_service and app.crud; this
++module only maps HTTP errors to the right status codes.
++"""
++
++from fastapi import APIRouter, Depends, HTTPException
++from sqlalchemy.orm import Session
++
++from app import crud, schemas
++from app.config import get_raw_images_dir
++from app.database import get_db
++from app.services import batch_service
++from app.services.ai_pipeline import AIModelUnavailableError
++
++router = APIRouter(prefix="/api/batch", tags=["batch"])
++
++
++# ---------------------------------------------------------------------------
++# RESTORE (declared BEFORE the {batch_id} GET route so "quarantine" never
++# matches the dynamic segment)
++# ---------------------------------------------------------------------------
++
++@router.post(
++    "/quarantine/{image_row_id}/restore",
++    response_model=schemas.RestoreResponse,
++)
++def restore_quarantined_image(image_row_id: int, db: Session = Depends(get_db)):
++    """Restore a quarantined image to its recorded original location.
++    Returns 409 if the destination already exists (never overwrites)."""
++    try:
++        return batch_service.restore_quarantined(db, image_row_id)
++    except batch_service.RestoreNotFoundError as exc:
++        raise HTTPException(status_code=404, detail=str(exc)) from exc
++    except batch_service.RestoreConflictError as exc:
++        raise HTTPException(status_code=409, detail=str(exc)) from exc
++
++
++# ---------------------------------------------------------------------------
++# Quarantine listing
++# ---------------------------------------------------------------------------
++
++@router.get("/quarantine", response_model=list[schemas.QuarantineItemOut])
++def list_quarantined(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
++    """List quarantined images (blank frames) across all batches, most
++    recent first."""
++    rows = crud.list_quarantined_images(db, skip=skip, limit=limit)
++    return rows
++
++
++# ---------------------------------------------------------------------------
++# Batch ingestion + retrieval
++# ---------------------------------------------------------------------------
++
++@router.post("/analyze", response_model=schemas.BatchSummary, status_code=201)
++def analyze_batch(
++    request: schemas.BatchAnalyzeRequest = schemas.BatchAnalyzeRequest(),
++    db: Session = Depends(get_db),
++):
++    """Ingest a raw camera-trap folder (default: the configured
++    PUGA_RAW_IMAGES_DIR / D:\\penchimages) end to end: scan -> dedupe ->
++    quarantine blanks -> run the existing /api/analyze pipeline on the
++    rest. Runs synchronously; use `limit` to keep a demo run fast."""
++    try:
++        return batch_service.run_batch(db, request)
++    except batch_service.FolderNotFoundError as exc:
++        raise HTTPException(status_code=404, detail=str(exc)) from exc
++    except AIModelUnavailableError as exc:
++        raise HTTPException(status_code=503, detail=str(exc)) from exc
++
++
++@router.get("", response_model=list[str])
++def list_batches(db: Session = Depends(get_db)):
++    """List all batch_ids that have been run so far, most recent first."""
++    return crud.list_batch_ids(db)
++
++
++@router.get("/config")
++def get_batch_config():
++    """The folder that will be scanned when `folder` is omitted from a
++    POST /api/batch/analyze request."""
++    return {"raw_images_dir": get_raw_images_dir()}
++
++
++@router.get("/{batch_id}", response_model=schemas.BatchSummary)
++def get_batch(batch_id: str, db: Session = Depends(get_db)):
++    rows = crud.get_batch_images(db, batch_id)
++    if not rows:
++        raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
++    return batch_service.build_batch_summary(db, batch_id, folder="")
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index 2b496fb..f2c895d 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -176,6 +176,69 @@ class AnalyzeResultOut(BaseModel):
+     embedding: Optional[EmbeddingOut] = None
+ 
+ 
++# ---------------------------------------------------------------------------
++# Batch ingestion
++# ---------------------------------------------------------------------------
++
++class BatchAnalyzeRequest(BaseModel):
++    folder: Optional[str] = None  # defaults to app.config.get_raw_images_dir()
++    camera_id: Optional[str] = None
++    recursive: bool = True
++    detection_threshold: float = 0.2
++    limit: Optional[int] = None  # cap #files processed this run (demo/CPU friendliness)
++
++
++class BatchImageOut(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++
++    id: int
++    batch_id: str
++    filename: str
++    original_path: str
++    status: str
++    sighting_id: Optional[str] = None
++    tiger_id: Optional[str] = None
++    match_status: Optional[str] = None
++    best_similarity: Optional[float] = None
++    crop_path: Optional[str] = None
++    embedding_path: Optional[str] = None
++    quarantine_path: Optional[str] = None
++    reason: Optional[str] = None
++    error: Optional[str] = None
++    created_at: datetime
++
++
++class BatchSummary(BaseModel):
++    batch_id: str
++    folder: str
++    total_files: int
++    processed: int
++    needs_review: int
++    quarantined: int
++    duplicate: int
++    failed: int
++    images: list[BatchImageOut] = []
++
++
++class QuarantineItemOut(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++
++    id: int
++    batch_id: str
++    filename: str
++    original_path: str
++    quarantine_path: Optional[str] = None
++    reason: Optional[str] = None
++    created_at: datetime
++
++
++class RestoreResponse(BaseModel):
++    id: int
++    filename: str
++    restored_to: str
++    status: str
++
++
+ # ---------------------------------------------------------------------------
+ # Health
+ # ---------------------------------------------------------------------------
+diff --git a/backend/app/services/batch_service.py b/backend/app/services/batch_service.py
+new file mode 100644
+index 0000000..d7a69fd
+--- /dev/null
++++ b/backend/app/services/batch_service.py
+@@ -0,0 +1,271 @@
++"""
++Batch ingestion for a raw camera-trap folder (e.g. D:\\penchimages).
++
++    folder of raw images
++      -> scan (recursive, dedupe by content hash)
++      -> for each new file: reuse app.services.analyze_service.analyze_image
++           - no animal detected -> move original to data/quarantine/{batch_id}/
++                                    (reversible; nothing is ever deleted)
++           - animal detected    -> AUTO_MATCH / REVIEW / POSSIBLE_NEW, exactly
++                                    as a single POST /api/analyze call would
++      -> BatchImage row per file (app.crud) records the outcome for audit
++         + resumability
++
++This module deliberately does NOT reimplement any detection/embedding/
++matching logic -- it only orchestrates calling analyze_service per file,
++which is the same code path POST /api/analyze already uses and already
++has test coverage for.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import shutil
++from pathlib import Path
++from typing import Optional
++
++from sqlalchemy.orm import Session
++
++from app import crud, schemas
++from app.config import get_raw_images_dir
++from app.services import analyze_service
++from app.services.ai_pipeline import AIModelUnavailableError
++
++IMAGE_EXTENSIONS = analyze_service.ALLOWED_EXTENSIONS
++
++
++def _quarantine_root() -> Path:
++    """Computed on every call (not a frozen module-level constant) so it
++    always reflects the current app.services.analyze_service.DATA_DIR --
++    important for tests, which monkeypatch DATA_DIR per-test."""
++    return analyze_service.DATA_DIR / "quarantine"
++
++
++class FolderNotFoundError(ValueError):
++    """The requested raw-images folder doesn't exist. Mapped to HTTP 404
++    by the router."""
++
++
++class RestoreNotFoundError(ValueError):
++    """No quarantined BatchImage row with this id. Mapped to HTTP 404."""
++
++
++class RestoreConflictError(ValueError):
++    """A file already exists at the restore destination -- refuse to
++    overwrite it. Mapped to HTTP 409."""
++
++
++class _FakeUpload:
++    """Minimal stand-in for FastAPI's UploadFile -- analyze_service only
++    reads `.filename` off it, so a batch file read from disk can reuse
++    the exact same analyze_image() code path as a real HTTP upload."""
++
++    def __init__(self, filename: str):
++        self.filename = filename
++
++
++def new_batch_id() -> str:
++    import uuid
++
++    return f"BATCH-{uuid.uuid4().hex[:10].upper()}"
++
++
++def resolve_folder(folder: Optional[str]) -> Path:
++    raw = folder or get_raw_images_dir()
++    path = Path(raw)
++    if not path.exists() or not path.is_dir():
++        raise FolderNotFoundError(
++            f"Raw images folder not found: '{raw}'. Create it (or set "
++            "PUGA_RAW_IMAGES_DIR / pass 'folder' in the request) before "
++            "running a batch."
++        )
++    return path
++
++
++def scan_images(folder: Path, recursive: bool = True) -> list[Path]:
++    pattern = "**/*" if recursive else "*"
++    return sorted(
++        p
++        for p in folder.glob(pattern)
++        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
++    )
++
++
++def sha256_file(path: Path) -> str:
++    hasher = hashlib.sha256()
++    with open(path, "rb") as f:
++        for chunk in iter(lambda: f.read(1024 * 1024), b""):
++            hasher.update(chunk)
++    return hasher.hexdigest()
++
++
++def _quarantine_destination(batch_id: str, filename: str) -> Path:
++    """Collision-safe destination under data/quarantine/{batch_id}/ --
++    never overwrites an existing file."""
++    batch_dir = _quarantine_root() / batch_id
++    batch_dir.mkdir(parents=True, exist_ok=True)
++
++    dest = batch_dir / filename
++    if not dest.exists():
++        return dest
++
++    stem, suffix = Path(filename).stem, Path(filename).suffix
++    n = 1
++    while True:
++        candidate = batch_dir / f"{stem}_{n}{suffix}"
++        if not candidate.exists():
++            return candidate
++        n += 1
++
++
++def _relative_to_data(path: Path) -> str:
++    return path.resolve().relative_to(analyze_service.DATA_DIR.resolve()).as_posix()
++
++
++def run_batch(db: Session, request: schemas.BatchAnalyzeRequest) -> schemas.BatchSummary:
++    folder = resolve_folder(request.folder)
++    batch_id = new_batch_id()
++
++    files = scan_images(folder, recursive=request.recursive)
++    if request.limit is not None:
++        files = files[: request.limit]
++
++    for path in files:
++        _process_one(db, batch_id=batch_id, path=path, request=request)
++
++    return build_batch_summary(db, batch_id, folder=str(folder))
++
++
++def _process_one(
++    db: Session,
++    *,
++    batch_id: str,
++    path: Path,
++    request: schemas.BatchAnalyzeRequest,
++) -> None:
++    file_hash = sha256_file(path)
++
++    duplicate_of = crud.find_batch_image_by_hash(db, file_hash)
++    if duplicate_of is not None:
++        crud.create_batch_image(
++            db,
++            batch_id=batch_id,
++            original_path=str(path),
++            filename=path.name,
++            file_hash=file_hash,
++            status="duplicate",
++        )
++        return
++
++    row = crud.create_batch_image(
++        db,
++        batch_id=batch_id,
++        original_path=str(path),
++        filename=path.name,
++        file_hash=file_hash,
++        status="pending",
++    )
++
++    try:
++        raw_bytes = path.read_bytes()
++        result = analyze_service.analyze_image(
++            db=db,
++            upload=_FakeUpload(path.name),
++            raw_bytes=raw_bytes,
++            camera_id=request.camera_id,
++            detection_threshold=request.detection_threshold,
++        )
++    except analyze_service.InvalidImageError as exc:
++        crud.update_batch_image(db, row, status="failed", error=str(exc))
++        return
++    except AIModelUnavailableError as exc:
++        crud.update_batch_image(db, row, status="failed", error=str(exc))
++        return
++    except Exception as exc:  # noqa: BLE001 -- one bad file must not kill the batch
++        crud.update_batch_image(db, row, status="failed", error=str(exc))
++        return
++
++    if not result.animal_detected:
++        # Blank frame: quarantine the ORIGINAL file (move, never delete).
++        dest = _quarantine_destination(batch_id, path.name)
++        shutil.move(str(path), str(dest))
++        crud.update_batch_image(
++            db,
++            row,
++            status="quarantined",
++            reason="no_animal_detected",
++            quarantine_path=_relative_to_data(dest),
++        )
++        return
++
++    if result.sighting_id is not None:
++        crud.update_batch_image(
++            db,
++            row,
++            status="processed",
++            sighting_id=result.sighting_id,
++            tiger_id=result.tiger_id,
++            match_status=result.match_status,
++            best_similarity=result.best_similarity,
++            crop_path=result.crop_path,
++            embedding_path=result.embedding_path,
++        )
++    else:
++        # REVIEW / POSSIBLE_NEW -- animal found, but no automatic tiger
++        # decision. Original file is left in place (it's not a blank);
++        # crop/embedding are already saved on disk for the human-review
++        # workflow to reuse.
++        crud.update_batch_image(
++            db,
++            row,
++            status="needs_review",
++            match_status=result.match_status,
++            best_similarity=result.best_similarity,
++            crop_path=result.crop_path,
++            embedding_path=result.embedding_path,
++        )
++
++
++def build_batch_summary(db: Session, batch_id: str, folder: str) -> schemas.BatchSummary:
++    rows = crud.get_batch_images(db, batch_id)
++    counts = {"processed": 0, "needs_review": 0, "quarantined": 0, "duplicate": 0, "failed": 0}
++    for r in rows:
++        if r.status in counts:
++            counts[r.status] += 1
++
++    return schemas.BatchSummary(
++        batch_id=batch_id,
++        folder=folder,
++        total_files=len(rows),
++        processed=counts["processed"],
++        needs_review=counts["needs_review"],
++        quarantined=counts["quarantined"],
++        duplicate=counts["duplicate"],
++        failed=counts["failed"],
++        images=[schemas.BatchImageOut.model_validate(r) for r in rows],
++    )
++
++
++def restore_quarantined(db: Session, image_row_id: int) -> schemas.RestoreResponse:
++    row = crud.get_batch_image(db, image_row_id)
++    if row is None or row.status != "quarantined" or not row.quarantine_path:
++        raise RestoreNotFoundError(
++            f"No quarantined batch image with id {image_row_id}."
++        )
++
++    src = analyze_service.DATA_DIR / row.quarantine_path
++    dest = Path(row.original_path)
++
++    if dest.exists():
++        raise RestoreConflictError(
++            f"Cannot restore: a file already exists at '{dest}'."
++        )
++
++    dest.parent.mkdir(parents=True, exist_ok=True)
++    shutil.move(str(src), str(dest))
++
++    crud.update_batch_image(db, row, status="restored", quarantine_path=None)
++
++    return schemas.RestoreResponse(
++        id=row.id, filename=row.filename, restored_to=str(dest), status="restored"
++    )
+diff --git a/backend/tests/test_batch.py b/backend/tests/test_batch.py
+new file mode 100644
+index 0000000..a310667
+--- /dev/null
++++ b/backend/tests/test_batch.py
+@@ -0,0 +1,302 @@
++"""
++Tests for POST /api/batch/analyze and the quarantine/restore workflow.
++
++As in test_analyze.py, the AI models are mocked (app.services.ai_pipeline)
++so these tests don't need real weights/GPU. What's under test here is the
++batch orchestration itself: folder scanning, hashing/dedupe, quarantining
++blanks (reversibly), routing animal detections through the existing
++analyze_service pipeline, and the quarantine listing/restore endpoints.
++
++Run from backend/:  pytest -q
++"""
++
++import io
++import os
++import sys
++import tempfile
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++import pytest
++import torch
++from fastapi.testclient import TestClient
++from PIL import Image
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++from app.database import Base, get_db
++from app import main as main_module
++from app.services import ai_pipeline
++
++FAKE_DETECTION_WITH_ANIMAL = [
++    {"category": "animal", "confidence": 0.87, "bbox": [10.0, 10.0, 90.0, 90.0]}
++]
++FAKE_DETECTION_NO_ANIMAL = [
++    {"category": "person", "confidence": 0.75, "bbox": [0.0, 0.0, 50.0, 50.0]}
++]
++
++
++def _make_test_jpeg_bytes(color=(120, 60, 20)) -> bytes:
++    img = Image.new("RGB", (120, 120), color=color)
++    buf = io.BytesIO()
++    img.save(buf, format="JPEG")
++    return buf.getvalue()
++
++
++@pytest.fixture()
++def client(monkeypatch):
++    tmp_dir = tempfile.mkdtemp()
++    tmp_db_path = os.path.join(tmp_dir, "test_puga.db")
++
++    engine = create_engine(
++        f"sqlite:///{tmp_db_path}", connect_args={"check_same_thread": False}
++    )
++    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
++
++    from app import models  # noqa: F401
++
++    Base.metadata.create_all(bind=engine)
++
++    def override_get_db():
++        db = TestingSessionLocal()
++        try:
++            yield db
++        finally:
++            db.close()
++
++    main_module.app.dependency_overrides[get_db] = override_get_db
++
++    from app import database as db_module
++    from app.services import analyze_service
++
++    tmp_data_dir = os.path.join(tmp_dir, "data")
++    images_dir = os.path.join(tmp_data_dir, "images")
++    crops_dir = os.path.join(tmp_data_dir, "crops")
++    embeddings_dir = os.path.join(tmp_data_dir, "embeddings")
++    for d in (images_dir, crops_dir, embeddings_dir):
++        os.makedirs(d, exist_ok=True)
++
++    from pathlib import Path
++
++    monkeypatch.setattr(db_module, "DATA_DIR", Path(tmp_data_dir))
++    monkeypatch.setattr(db_module, "IMAGES_DIR", Path(images_dir))
++    monkeypatch.setattr(db_module, "CROPS_DIR", Path(crops_dir))
++    monkeypatch.setattr(db_module, "EMBEDDINGS_DIR", Path(embeddings_dir))
++    monkeypatch.setattr(analyze_service, "IMAGES_DIR", Path(images_dir))
++    monkeypatch.setattr(analyze_service, "CROPS_DIR", Path(crops_dir))
++    monkeypatch.setattr(analyze_service, "EMBEDDINGS_DIR", Path(embeddings_dir))
++    monkeypatch.setattr(analyze_service, "DATA_DIR", Path(tmp_data_dir))
++
++    # A source folder to stand in for D:\penchimages in tests.
++    raw_dir = os.path.join(tmp_dir, "raw_images")
++    os.makedirs(raw_dir, exist_ok=True)
++
++    with TestClient(main_module.app) as test_client:
++        yield test_client, raw_dir
++
++    main_module.app.dependency_overrides.clear()
++
++
++@pytest.fixture()
++def mock_animal_detection(monkeypatch):
++    monkeypatch.setattr(
++        ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_WITH_ANIMAL
++    )
++    monkeypatch.setattr(
++        ai_pipeline,
++        "compute_embedding",
++        lambda crop_image: torch.nn.functional.normalize(torch.rand(1, 1536), dim=1),
++    )
++
++
++@pytest.fixture()
++def mock_no_animal_detection(monkeypatch):
++    monkeypatch.setattr(
++        ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_NO_ANIMAL
++    )
++
++
++def _write(raw_dir: str, name: str, color=(120, 60, 20)) -> str:
++    path = os.path.join(raw_dir, name)
++    with open(path, "wb") as f:
++        f.write(_make_test_jpeg_bytes(color))
++    return path
++
++
++def test_batch_config_shows_default_folder(client):
++    test_client, _ = client
++    resp = test_client.get("/api/batch/config")
++    assert resp.status_code == 200
++    assert resp.json()["raw_images_dir"] == "D:\\penchimages"
++
++
++def test_batch_analyze_missing_folder_404s(client):
++    test_client, _ = client
++    resp = test_client.post(
++        "/api/batch/analyze", json={"folder": "/nonexistent/path/xyz"}
++    )
++    assert resp.status_code == 404
++
++
++def test_batch_quarantines_blank_images(client, mock_no_animal_detection):
++    test_client, raw_dir = client
++    _write(raw_dir, "blank1.jpg", color=(10, 10, 10))
++    _write(raw_dir, "blank2.jpg", color=(20, 20, 20))
++
++    resp = test_client.post("/api/batch/analyze", json={"folder": raw_dir})
++    assert resp.status_code == 201
++    body = resp.json()
++
++    assert body["total_files"] == 2
++    assert body["quarantined"] == 2
++    assert body["processed"] == 0
++    assert body["failed"] == 0
++
++    # Originals should be MOVED, not deleted -- gone from raw_dir...
++    assert not os.path.exists(os.path.join(raw_dir, "blank1.jpg"))
++    # ...and each row records where it went.
++    for img in body["images"]:
++        assert img["status"] == "quarantined"
++        assert img["quarantine_path"] is not None
++        assert img["reason"] == "no_animal_detected"
++
++    # And the quarantine listing endpoint should show them.
++    listing = test_client.get("/api/batch/quarantine").json()
++    assert len(listing) == 2
++
++
++def test_batch_routes_animal_images_through_analyze_pipeline(client, mock_animal_detection):
++    test_client, raw_dir = client
++    _write(raw_dir, "tiger1.jpg", color=(200, 100, 50))
++
++    resp = test_client.post("/api/batch/analyze", json={"folder": raw_dir})
++    assert resp.status_code == 201
++    body = resp.json()
++
++    assert body["total_files"] == 1
++    # Empty gallery -> POSSIBLE_NEW -> needs_review (per reid_decision.py,
++    # no sighting is auto-created).
++    assert body["needs_review"] == 1
++    assert body["quarantined"] == 0
++
++    img = body["images"][0]
++    assert img["status"] == "needs_review"
++    assert img["match_status"] == "POSSIBLE_NEW"
++    assert img["crop_path"] is not None
++
++    # Original file untouched (it's not a blank).
++    assert os.path.exists(os.path.join(raw_dir, "tiger1.jpg"))
++
++
++def test_batch_deduplicates_identical_file_content(client, mock_no_animal_detection):
++    test_client, raw_dir = client
++    _write(raw_dir, "a.jpg", color=(50, 50, 50))
++    _write(raw_dir, "a_copy.jpg", color=(50, 50, 50))  # identical bytes, different name
++
++    resp = test_client.post("/api/batch/analyze", json={"folder": raw_dir})
++    body = resp.json()
++
++    assert body["total_files"] == 2
++    statuses = sorted(img["status"] for img in body["images"])
++    assert statuses == ["duplicate", "quarantined"]
++
++
++def test_batch_resume_skips_already_terminal_files_on_rerun(client, mock_no_animal_detection):
++    test_client, raw_dir = client
++    _write(raw_dir, "blank.jpg", color=(30, 30, 30))
++
++    first = test_client.post("/api/batch/analyze", json={"folder": raw_dir}).json()
++    assert first["quarantined"] == 1
++
++    # File was moved out of raw_dir into quarantine, so a second run over
++    # the same folder should just see nothing left to process.
++    second = test_client.post("/api/batch/analyze", json={"folder": raw_dir}).json()
++    assert second["total_files"] == 0
++
++
++def test_batch_bad_ai_dependency_marks_file_failed_not_whole_batch(client, monkeypatch):
++    test_client, raw_dir = client
++    _write(raw_dir, "broken.jpg")
++
++    def _raise(*args, **kwargs):
++        raise ai_pipeline.AIModelUnavailableError("weights not downloaded")
++
++    monkeypatch.setattr(ai_pipeline, "run_detection", _raise)
++
++    resp = test_client.post("/api/batch/analyze", json={"folder": raw_dir})
++    assert resp.status_code == 201  # batch endpoint itself succeeds
++    body = resp.json()
++    assert body["failed"] == 1
++    assert "weights not downloaded" in body["images"][0]["error"]
++
++
++def test_list_batches_and_get_batch_by_id(client, mock_no_animal_detection):
++    test_client, raw_dir = client
++    _write(raw_dir, "x.jpg")
++
++    created = test_client.post("/api/batch/analyze", json={"folder": raw_dir}).json()
++    batch_id = created["batch_id"]
++
++    listing = test_client.get("/api/batch").json()
++    assert batch_id in listing
++
++    detail = test_client.get(f"/api/batch/{batch_id}")
++    assert detail.status_code == 200
++    assert detail.json()["total_files"] == 1
++
++
++def test_get_unknown_batch_404s(client):
++    test_client, _ = client
++    resp = test_client.get("/api/batch/BATCH-DOES-NOT-EXIST")
++    assert resp.status_code == 404
++
++
++def test_restore_quarantined_image(client, mock_no_animal_detection):
++    test_client, raw_dir = client
++    original_path = _write(raw_dir, "restore_me.jpg", color=(60, 60, 60))
++
++    created = test_client.post("/api/batch/analyze", json={"folder": raw_dir}).json()
++    image_row_id = created["images"][0]["id"]
++
++    assert not os.path.exists(original_path)  # moved to quarantine
++
++    restore_resp = test_client.post(f"/api/batch/quarantine/{image_row_id}/restore")
++    assert restore_resp.status_code == 200
++    assert os.path.exists(original_path)  # back where it started
++
++    # Should no longer show up in the quarantine listing.
++    listing = test_client.get("/api/batch/quarantine").json()
++    assert all(item["id"] != image_row_id for item in listing)
++
++
++def test_restore_nonexistent_image_404s(client):
++    test_client, _ = client
++    resp = test_client.post("/api/batch/quarantine/99999/restore")
++    assert resp.status_code == 404
++
++
++def test_restore_conflict_when_destination_exists(client, mock_no_animal_detection):
++    test_client, raw_dir = client
++    original_path = _write(raw_dir, "conflict.jpg", color=(70, 70, 70))
++
++    created = test_client.post("/api/batch/analyze", json={"folder": raw_dir}).json()
++    image_row_id = created["images"][0]["id"]
++
++    # Recreate a file at the original path before restoring.
++    with open(original_path, "wb") as f:
++        f.write(_make_test_jpeg_bytes())
++
++    resp = test_client.post(f"/api/batch/quarantine/{image_row_id}/restore")
++    assert resp.status_code == 409
++
++
++def test_batch_limit_caps_files_processed(client, mock_no_animal_detection):
++    test_client, raw_dir = client
++    for i in range(5):
++        _write(raw_dir, f"img{i}.jpg", color=(i * 10, i * 10, i * 10))
++
++    resp = test_client.post(
++        "/api/batch/analyze", json={"folder": raw_dir, "limit": 2}
++    )
++    body = resp.json()
++    assert body["total_files"] == 2

@@ -1,0 +1,13 @@
+TO open environment 
+(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& "d:\THE PUGA PROJECT\puga-env\Scripts\Activate.ps1")
+cd backend
+then this starts backend
+python -m uvicorn app.main:app --reload
+to see sql 
+http://127.0.0.1:8000/docs
+then to start frontend 
+create a new terminal 
+start the environment and then 
+cd frontend
+npm run dev
+
