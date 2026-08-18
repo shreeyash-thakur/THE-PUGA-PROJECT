@@ -1,0 +1,876 @@
+diff --git a/backend/app/config.py b/backend/app/config.py
+new file mode 100644
+index 0000000..3bd8146
+--- /dev/null
++++ b/backend/app/config.py
+@@ -0,0 +1,97 @@
++"""
++Centralized backend configuration, read from environment variables.
++
++This is the project's first environment-variable-driven config point --
++currently it only holds the Re-ID decision engine's thresholds
++(app.services.reid_decision), but it's the natural place to extend if the
++project grows more configuration later.
++"""
++
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass
++
++
++class InvalidReIDConfigError(ValueError):
++    """Raised when the Re-ID threshold configuration is invalid (e.g. a
++    non-numeric env var, a value outside [-1.0, 1.0], or
++    AUTO_MATCH_THRESHOLD <= REVIEW_THRESHOLD). Fails loudly and early
++    rather than silently misclassifying every /api/analyze call."""
++
++
++# ---------------------------------------------------------------------------
++# Re-ID decision engine thresholds
++# ---------------------------------------------------------------------------
++#
++# These are PROTOTYPE / DEMO defaults, NOT scientifically validated values.
++# They are compared against app.services.ai_pipeline.cosine_similarity's
++# output: the cosine similarity of two L2-normalized MegaDescriptor-L-384
++# embeddings, which is mathematically bounded to [-1.0, 1.0] (1.0 =
++# identical embedding, 0.0 = orthogonal, negative = anti-correlated).
++#
++# Treat these two defaults as a starting point only, to be calibrated
++# against real Pench/tiger data before any production use:
++#   REID_AUTO_MATCH_THRESHOLD = 0.75  -- auto-accept as the same tiger
++#   REID_REVIEW_THRESHOLD     = 0.50  -- flag for human review instead of
++#                                        auto-accepting or auto-rejecting
++#
++# Override either via environment variables of the same name, e.g.:
++#   REID_AUTO_MATCH_THRESHOLD=0.80 REID_REVIEW_THRESHOLD=0.55 uvicorn app.main:app
++DEFAULT_AUTO_MATCH_THRESHOLD = 0.75
++DEFAULT_REVIEW_THRESHOLD = 0.50
++
++_AUTO_MATCH_ENV_VAR = "REID_AUTO_MATCH_THRESHOLD"
++_REVIEW_ENV_VAR = "REID_REVIEW_THRESHOLD"
++
++
++def _read_float_env(name: str, default: float) -> float:
++    raw = os.getenv(name)
++    if raw is None or raw.strip() == "":
++        return default
++    try:
++        return float(raw)
++    except ValueError as exc:
++        raise InvalidReIDConfigError(
++            f"Environment variable {name}='{raw}' is not a valid float."
++        ) from exc
++
++
++@dataclass(frozen=True)
++class ReIDSettings:
++    auto_match_threshold: float
++    review_threshold: float
++
++    def __post_init__(self) -> None:
++        if not (-1.0 <= self.review_threshold <= 1.0):
++            raise InvalidReIDConfigError(
++                f"{_REVIEW_ENV_VAR}={self.review_threshold} is out of the "
++                "valid cosine-similarity range [-1.0, 1.0]."
++            )
++        if not (-1.0 <= self.auto_match_threshold <= 1.0):
++            raise InvalidReIDConfigError(
++                f"{_AUTO_MATCH_ENV_VAR}={self.auto_match_threshold} is out "
++                "of the valid cosine-similarity range [-1.0, 1.0]."
++            )
++        if self.auto_match_threshold <= self.review_threshold:
++            raise InvalidReIDConfigError(
++                f"{_AUTO_MATCH_ENV_VAR} ({self.auto_match_threshold}) must "
++                f"be strictly greater than {_REVIEW_ENV_VAR} "
++                f"({self.review_threshold})."
++            )
++
++
++def get_reid_settings() -> ReIDSettings:
++    """Read + validate the Re-ID thresholds from the environment.
++
++    Deliberately not cached/memoized: re-reading os.environ on every call
++    is cheap, keeps a long-running process able to pick up config changes
++    without a restart, and lets tests monkeypatch/os.environ per-test
++    without needing to reset a module-level cache.
++    """
++    return ReIDSettings(
++        auto_match_threshold=_read_float_env(
++            _AUTO_MATCH_ENV_VAR, DEFAULT_AUTO_MATCH_THRESHOLD
++        ),
++        review_threshold=_read_float_env(_REVIEW_ENV_VAR, DEFAULT_REVIEW_THRESHOLD),
++    )
+diff --git a/backend/app/routers/analyze.py b/backend/app/routers/analyze.py
+index 0455fc4..af87f14 100644
+--- a/backend/app/routers/analyze.py
++++ b/backend/app/routers/analyze.py
+@@ -25,10 +25,18 @@ async def analyze_image(
+     """Run the full MegaDetector -> crop -> MegaDescriptor -> SQLite
+     pipeline on one uploaded image.
+ 
+-    If `tiger_id` is omitted, a new tiger record is created automatically
+-    (status "unidentified") and candidate matches against existing tigers
+-    are returned for a human to review -- no similarity threshold is
+-    applied automatically.
++    If `tiger_id` is supplied, the sighting is assigned to that tiger
++    directly (explicit human decision).
++
++    Otherwise, the Re-ID decision engine (app.services.reid_decision)
++    classifies the best similarity match against the existing gallery as
++    AUTO_MATCH, REVIEW, or POSSIBLE_NEW:
++      - AUTO_MATCH: the sighting is automatically assigned to the
++        matched existing tiger.
++      - REVIEW / POSSIBLE_NEW: no tiger is created or assigned
++        automatically; `match_status`/`review_required` tell the caller
++        a human needs to decide. No Sighting/Embedding row is created
++        for this case yet -- that's handled by the human-review workflow.
+     """
+     raw_bytes = await file.read()
+ 
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index 93003db..2b496fb 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -153,6 +153,17 @@ class AnalyzeResponse(BaseModel):
+ 
+     candidate_matches: list[CandidateMatch] = []
+ 
++    # --- Re-ID decision engine ------------------------------------------
++    # Populated only for the automatic path (no caller-supplied tiger_id)
++    # when at least a detection was made. "AUTO_MATCH" | "REVIEW" |
++    # "POSSIBLE_NEW" | None (None = decision engine did not run, e.g. no
++    # animal detected, or the caller explicitly supplied tiger_id).
++    match_status: Optional[str] = None
++    matched_tiger_id: Optional[str] = None
++    best_similarity: Optional[float] = None
++    confidence: Optional[float] = None
++    review_required: bool = False
++
+     note: str
+ 
+ 
+diff --git a/backend/app/services/analyze_service.py b/backend/app/services/analyze_service.py
+index 6a04234..9ab9b2a 100644
+--- a/backend/app/services/analyze_service.py
++++ b/backend/app/services/analyze_service.py
+@@ -16,6 +16,7 @@ stay separate, per the task's code-quality requirements.
+ 
+ from __future__ import annotations
+ 
++import logging
+ import uuid
+ from pathlib import Path
+ from typing import Optional
+@@ -26,7 +27,9 @@ from sqlalchemy.orm import Session
+ 
+ from app import crud, schemas
+ from app.database import IMAGES_DIR, CROPS_DIR, EMBEDDINGS_DIR, DATA_DIR
+-from app.services import ai_pipeline
++from app.services import ai_pipeline, reid_decision
++
++logger = logging.getLogger(__name__)
+ 
+ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+ MAX_CANDIDATE_MATCHES = 5
+@@ -169,20 +172,82 @@ def analyze_image(
+     if ranked:
+         best_similarity = ranked[0][1]
+ 
+-    # --- tiger record --------------------------------------------------
++    # --- tiger record / Re-ID decision -----------------------------------
++    #
++    # If the caller explicitly supplied tiger_id, that's a deliberate
++    # human decision and always wins -- the automatic decision engine
++    # below only runs for the "figure it out automatically" path.
++    decision: Optional[reid_decision.ReIDDecision] = None
++    resolved_tiger_id: Optional[str]
++    tiger_status: Optional[str]
++
+     if tiger_id is not None:
+         resolved_tiger_id = tiger_id
+         tiger_status = "matched"  # explicitly assigned by the caller
+     else:
+-        resolved_tiger_id = crud.generate_unique_tiger_id(db)
+-        crud.create_tiger(
+-            db,
+-            schemas.TigerCreate(
+-                tiger_id=resolved_tiger_id,
+-                status="unidentified",
+-            ),
++        decision = reid_decision.decide(candidate_matches)
++
++        if decision.match_status == reid_decision.AUTO_MATCH:
++            # Belt-and-suspenders: never assign to a tiger_id that isn't
++            # actually in the DB (e.g. deleted between the similarity
++            # query above and now). Downgrade to REVIEW instead of
++            # crashing or silently mis-assigning.
++            if crud.get_tiger(db, decision.matched_tiger_id) is None:
++                logger.warning(
++                    "RE-ID: AUTO_MATCH candidate tiger '%s' no longer "
++                    "exists; downgrading this decision to REVIEW.",
++                    decision.matched_tiger_id,
++                )
++                decision = reid_decision.ReIDDecision(
++                    match_status=reid_decision.REVIEW,
++                    matched_tiger_id=None,
++                    best_similarity=decision.best_similarity,
++                    confidence=decision.confidence,
++                    review_required=True,
++                )
++
++        if decision.match_status == reid_decision.AUTO_MATCH:
++            resolved_tiger_id = decision.matched_tiger_id
++            tiger_status = "matched"
++        else:
++            # REVIEW / POSSIBLE_NEW: per spec, do NOT auto-create a new
++            # tiger and do NOT assign an existing one -- that decision is
++            # left to a human. Since Sighting/Embedding rows require a
++            # resolved tiger_id, neither is created yet either; linking
++            # (or creating) a tiger for this sighting is deferred to the
++            # human-review workflow (a later step). The image/crop/
++            # embedding files saved above stay on disk so that workflow
++            # can reuse them without recomputing anything.
++            resolved_tiger_id = None
++            tiger_status = None
++
++    if resolved_tiger_id is None:
++        note = (
++            f"Re-ID decision: {decision.match_status}. No tiger was "
++            "created or assigned automatically; human review is required "
++            "before this sighting can be linked to a tiger. "
++            "candidate_matches lists the closest existing tigers, if any."
++        )
++        return schemas.AnalyzeResponse(
++            image_id=image_id,
++            image_path=image_rel_path,
++            detections=detections,
++            animal_detected=True,
++            used_detection=best,
++            crop_path=crop_rel_path,
++            embedding_id=None,
++            embedding_path=embedding_rel_path,
++            sighting_id=None,
++            tiger_id=None,
++            tiger_status=None,
++            candidate_matches=candidate_matches,
++            match_status=decision.match_status,
++            matched_tiger_id=None,
++            best_similarity=decision.best_similarity,
++            confidence=decision.confidence,
++            review_required=decision.review_required,
++            note=note,
+         )
+-        tiger_status = "new"
+ 
+     # --- sighting + embedding rows --------------------------------------
+     sighting = crud.create_sighting(
+@@ -212,18 +277,14 @@ def analyze_image(
+         ),
+     )
+ 
+-    note = (
+-        "Similarity scores are informational only -- no fixed threshold "
+-        "is applied, so 'candidate_matches' is not an automatic "
+-        "identification. "
+-    )
+-    note += (
+-        f"Sighting assigned to caller-specified tiger '{resolved_tiger_id}'."
+-        if tiger_status == "matched"
+-        else f"No tiger_id was supplied, so a new tiger '{resolved_tiger_id}' "
+-        "was created; review candidate_matches to decide whether this is "
+-        "actually a known tiger."
+-    )
++    if decision is not None:
++        note = (
++            f"Re-ID decision: AUTO_MATCH (similarity="
++            f"{decision.best_similarity:.4f}) -- automatically assigned "
++            f"to existing tiger '{resolved_tiger_id}'."
++        )
++    else:
++        note = f"Sighting assigned to caller-specified tiger '{resolved_tiger_id}'."
+ 
+     return schemas.AnalyzeResponse(
+         image_id=image_id,
+@@ -238,6 +299,13 @@ def analyze_image(
+         tiger_id=resolved_tiger_id,
+         tiger_status=tiger_status,
+         candidate_matches=candidate_matches,
++        match_status=decision.match_status if decision is not None else None,
++        matched_tiger_id=resolved_tiger_id if decision is not None else None,
++        best_similarity=(
++            decision.best_similarity if decision is not None else best_similarity
++        ),
++        confidence=decision.confidence if decision is not None else None,
++        review_required=decision.review_required if decision is not None else False,
+         note=note,
+     )
+ 
+diff --git a/backend/app/services/reid_decision.py b/backend/app/services/reid_decision.py
+new file mode 100644
+index 0000000..e1f8f97
+--- /dev/null
++++ b/backend/app/services/reid_decision.py
+@@ -0,0 +1,132 @@
++"""
++Re-ID decision engine.
++
++Turns a list of ranked candidate matches (per-tiger best similarity
++scores, as already computed by app.services.analyze_service) into exactly
++one automatic decision:
++
++    AUTO_MATCH    -- best similarity >= REID_AUTO_MATCH_THRESHOLD
++    REVIEW        -- REID_REVIEW_THRESHOLD <= best similarity < REID_AUTO_MATCH_THRESHOLD
++    POSSIBLE_NEW  -- best similarity < REID_REVIEW_THRESHOLD (or no candidates at all)
++
++This module is pure decision logic: it does not touch the database, the
++filesystem, or the AI pipeline, and it does not decide *what to do* with
++the decision (e.g. whether to create/assign a Tiger row) -- that's
++app.services.analyze_service's job. Keeping this separate makes the
++thresholds/logic easy to unit test and easy to recalibrate later.
++"""
++
++from __future__ import annotations
++
++import logging
++import math
++from dataclasses import dataclass
++from typing import Optional, Sequence
++
++from app import schemas
++from app.config import get_reid_settings
++
++logger = logging.getLogger(__name__)
++
++AUTO_MATCH = "AUTO_MATCH"
++REVIEW = "REVIEW"
++POSSIBLE_NEW = "POSSIBLE_NEW"
++
++
++@dataclass(frozen=True)
++class ReIDDecision:
++    match_status: str  # AUTO_MATCH | REVIEW | POSSIBLE_NEW
++    matched_tiger_id: Optional[str]
++    best_similarity: Optional[float]
++    confidence: Optional[float]
++    review_required: bool
++
++
++def _rank_valid_candidates(
++    candidates: Sequence["schemas.CandidateMatch"],
++) -> list["schemas.CandidateMatch"]:
++    """Defensive normalization of the incoming candidate list: drops
++    invalid (None/NaN) similarity scores, collapses duplicate tiger_ids
++    down to their single best score, and sorts descending.
++
++    analyze_service already produces a deduped, sorted, valid list, but
++    the decision engine shouldn't silently trust that -- this keeps the
++    engine correct even if called from somewhere else, or with hand-built
++    test data.
++    """
++    best_per_tiger: dict[str, "schemas.CandidateMatch"] = {}
++    for candidate in candidates:
++        score = candidate.similarity_score
++        if score is None or (isinstance(score, float) and math.isnan(score)):
++            continue
++        existing = best_per_tiger.get(candidate.tiger_id)
++        if existing is None or score > existing.similarity_score:
++            best_per_tiger[candidate.tiger_id] = candidate
++
++    return sorted(
++        best_per_tiger.values(), key=lambda c: c.similarity_score, reverse=True
++    )
++
++
++def decide(candidates: Sequence["schemas.CandidateMatch"]) -> ReIDDecision:
++    """Classify a candidate list into a Re-ID decision using the
++    configured thresholds (app.config.get_reid_settings).
++
++    Raises app.config.InvalidReIDConfigError if the configured thresholds
++    are invalid -- callers should let this propagate as a clear startup
++    /request-time error rather than silently falling back to defaults.
++    """
++    settings = get_reid_settings()
++
++    ranked = _rank_valid_candidates(candidates)
++
++    if not ranked:
++        # Covers both "no existing tiger embeddings at all" and "every
++        # candidate had an invalid/NaN score" -- both mean we have no
++        # usable evidence of a match.
++        logger.info(
++            "RE-ID: no valid candidates (received=%d) -> decision=%s",
++            len(candidates),
++            POSSIBLE_NEW,
++        )
++        return ReIDDecision(
++            match_status=POSSIBLE_NEW,
++            matched_tiger_id=None,
++            best_similarity=None,
++            confidence=None,
++            review_required=True,
++        )
++
++    best = ranked[0]
++    best_similarity = best.similarity_score
++
++    if best_similarity >= settings.auto_match_threshold:
++        match_status = AUTO_MATCH
++        matched_tiger_id = best.tiger_id
++        review_required = False
++    elif best_similarity >= settings.review_threshold:
++        match_status = REVIEW
++        matched_tiger_id = None
++        review_required = True
++    else:
++        match_status = POSSIBLE_NEW
++        matched_tiger_id = None
++        review_required = True
++
++    logger.info(
++        "RE-ID: best_candidate=%s similarity=%.4f decision=%s "
++        "auto_match_threshold=%.4f review_threshold=%.4f",
++        best.tiger_id,
++        best_similarity,
++        match_status,
++        settings.auto_match_threshold,
++        settings.review_threshold,
++    )
++
++    return ReIDDecision(
++        match_status=match_status,
++        matched_tiger_id=matched_tiger_id,
++        best_similarity=best_similarity,
++        confidence=best_similarity,
++        review_required=review_required,
++    )
+diff --git a/backend/tests/test_analyze.py b/backend/tests/test_analyze.py
+index 4d536f3..3814b3c 100644
+--- a/backend/tests/test_analyze.py
++++ b/backend/tests/test_analyze.py
+@@ -118,6 +118,10 @@ def mock_detection_no_animal(monkeypatch):
+ 
+ 
+ def test_analyze_creates_new_tiger_when_animal_found(client, mock_detection_with_animal):
++    """With an empty gallery, best_similarity is None -> POSSIBLE_NEW.
++    Per the Re-ID decision engine spec, no tiger is auto-created and no
++    sighting is persisted for POSSIBLE_NEW; the caller gets the decision
++    plus the saved image/crop for a future human-review step."""
+     files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+     resp = client.post("/api/analyze", files=files)
+ 
+@@ -125,21 +129,16 @@ def test_analyze_creates_new_tiger_when_animal_found(client, mock_detection_with
+     body = resp.json()
+ 
+     assert body["animal_detected"] is True
+-    assert body["tiger_status"] == "new"
+-    assert body["tiger_id"].startswith("TIGER-")
+-    assert body["sighting_id"] is not None
+-    assert body["embedding_id"] is not None
++    assert body["match_status"] == "POSSIBLE_NEW"
++    assert body["review_required"] is True
++    assert body["matched_tiger_id"] is None
++    assert body["tiger_status"] is None
++    assert body["tiger_id"] is None
++    assert body["sighting_id"] is None
++    assert body["embedding_id"] is None
+     assert body["crop_path"] is not None
+     assert body["candidate_matches"] == []  # nothing in the gallery yet
+ 
+-    # The tiger and sighting should be independently retrievable.
+-    tiger_resp = client.get(f"/api/tigers/{body['tiger_id']}")
+-    assert tiger_resp.status_code == 200
+-    assert tiger_resp.json()["status"] == "unidentified"
+-
+-    sighting_resp = client.get(f"/api/sightings/{body['sighting_id']}")
+-    assert sighting_resp.status_code == 200
+-
+ 
+ def test_analyze_no_animal_creates_no_records(client, mock_detection_no_animal):
+     files = {"file": ("empty.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+@@ -151,6 +150,7 @@ def test_analyze_no_animal_creates_no_records(client, mock_detection_no_animal):
+     assert body["animal_detected"] is False
+     assert body["sighting_id"] is None
+     assert body["tiger_id"] is None
++    assert body["match_status"] is None
+     assert body["detections"] == FAKE_DETECTION_NO_ANIMAL
+ 
+ 
+@@ -182,9 +182,11 @@ def test_analyze_rejects_non_image_file(client, mock_detection_with_animal):
+     assert resp.status_code == 400
+ 
+ 
+-def test_analyze_similarity_scoring_against_existing_gallery(client, monkeypatch):
+-    """Two analyze calls with a fixed embedding should see each other in
+-    candidate_matches with similarity 1.0 (identical fake embedding)."""
++def test_analyze_similarity_scoring_and_auto_match(client, monkeypatch):
++    """Seed a known tiger via an explicit-tiger_id analyze call (so its
++    embedding is actually persisted), then a second, automatic call with
++    an identical embedding should score similarity 1.0 against it and
++    the Re-ID decision engine should AUTO_MATCH it to that tiger."""
+     fixed_embedding = torch.nn.functional.normalize(torch.ones(1, 1536), dim=1)
+ 
+     monkeypatch.setattr(
+@@ -194,17 +196,71 @@ def test_analyze_similarity_scoring_against_existing_gallery(client, monkeypatch
+         ai_pipeline, "compute_embedding", lambda crop_image: fixed_embedding.clone()
+     )
+ 
++    client.post("/api/tigers", json={"tiger_id": "TIGER-SEED", "name": "Seed"})
+     files = {"file": ("tiger1.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+-    first = client.post("/api/analyze", files=files).json()
++    first = client.post(
++        "/api/analyze", files=files, data={"tiger_id": "TIGER-SEED"}
++    ).json()
++    assert first["tiger_status"] == "matched"
+ 
+     files = {"file": ("tiger2.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+     second = client.post("/api/analyze", files=files).json()
+ 
+     assert second["candidate_matches"], "expected at least one candidate match"
+     match = second["candidate_matches"][0]
+-    assert match["tiger_id"] == first["tiger_id"]
++    assert match["tiger_id"] == "TIGER-SEED"
+     assert match["similarity_score"] == pytest.approx(1.0, abs=1e-3)
+ 
++    assert second["match_status"] == "AUTO_MATCH"
++    assert second["matched_tiger_id"] == "TIGER-SEED"
++    assert second["tiger_id"] == "TIGER-SEED"
++    assert second["tiger_status"] == "matched"
++    assert second["review_required"] is False
++    assert second["sighting_id"] is not None
++    assert second["embedding_id"] is not None
++
++
++def test_analyze_review_status_for_middle_similarity(client, monkeypatch):
++    """A best similarity strictly between REID_REVIEW_THRESHOLD and
++    REID_AUTO_MATCH_THRESHOLD must produce REVIEW, and REVIEW must NOT
++    assign or create any tiger (task requirement #8)."""
++    embedding_a = torch.zeros(1, 1536)
++    embedding_a[0, 0] = 1.0
++
++    # cosine_similarity(a, b) == 0.6 exactly -- between the default
++    # REVIEW_THRESHOLD (0.50) and AUTO_MATCH_THRESHOLD (0.75).
++    embedding_b = torch.zeros(1, 1536)
++    embedding_b[0, 0] = 0.6
++    embedding_b[0, 1] = 0.8
++
++    monkeypatch.setattr(
++        ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_WITH_ANIMAL
++    )
++
++    client.post("/api/tigers", json={"tiger_id": "TIGER-REVIEW-BASE"})
++    monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_a.clone())
++    files = {"file": ("base.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
++    client.post("/api/analyze", files=files, data={"tiger_id": "TIGER-REVIEW-BASE"})
++
++    monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_b.clone())
++    files = {"file": ("candidate.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
++    resp = client.post("/api/analyze", files=files)
++    assert resp.status_code == 201
++    body = resp.json()
++
++    assert body["candidate_matches"][0]["similarity_score"] == pytest.approx(0.6, abs=1e-3)
++    assert body["match_status"] == "REVIEW"
++    assert body["review_required"] is True
++    assert body["matched_tiger_id"] is None
++    assert body["tiger_id"] is None
++    assert body["tiger_status"] is None
++    assert body["sighting_id"] is None
++    assert body["embedding_id"] is None
++
++    # No new tiger was created, and the base tiger's rollup is untouched.
++    base = client.get("/api/tigers/TIGER-REVIEW-BASE").json()
++    assert base["total_sightings"] == 1
++
+ 
+ class _FakeUpload:
+     """Minimal stand-in for FastAPI's UploadFile -- analyze_service only
+@@ -253,12 +309,15 @@ def service_env(monkeypatch, tmp_path):
+ 
+ def test_first_analyze_call_never_matches_itself(client, mock_detection_with_animal):
+     """Regression test for the audited '1.0 similarity' report: with an
+-    empty gallery, a brand-new tiger's own embedding must never appear in
+-    its own candidate_matches."""
++    empty gallery, a brand-new sighting's own embedding must never appear
++    in its own candidate_matches (and, per the Re-ID decision engine,
++    an empty gallery -> POSSIBLE_NEW, so no tiger is assigned either)."""
+     files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+     body = client.post("/api/analyze", files=files).json()
+ 
+     assert body["candidate_matches"] == []
++    assert body["match_status"] == "POSSIBLE_NEW"
++    assert body["tiger_id"] is None
+     assert body["tiger_id"] not in [m["tiger_id"] for m in body["candidate_matches"]]
+ 
+ 
+@@ -266,7 +325,8 @@ def test_distinct_embeddings_do_not_score_as_identical(client, monkeypatch):
+     """Sanity check for the opposite failure mode: two genuinely
+     different embeddings must NOT be reported as a perfect match, proving
+     the comparison logic still discriminates correctly (not just always
+-    returning 1.0)."""
++    returning 1.0). Similarity 0.0 is well below REID_REVIEW_THRESHOLD,
++    so this should also decide POSSIBLE_NEW and not assign tiger A."""
+     embedding_a = torch.zeros(1, 1536)
+     embedding_a[0, 0] = 1.0  # unit vector along axis 0
+ 
+@@ -277,9 +337,10 @@ def test_distinct_embeddings_do_not_score_as_identical(client, monkeypatch):
+         ai_pipeline, "run_detection", lambda path, threshold=0.2: FAKE_DETECTION_WITH_ANIMAL
+     )
+ 
++    client.post("/api/tigers", json={"tiger_id": "TIGER-A"})
+     monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_a.clone())
+     files = {"file": ("tiger_a.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+-    client.post("/api/analyze", files=files)
++    client.post("/api/analyze", files=files, data={"tiger_id": "TIGER-A"})
+ 
+     monkeypatch.setattr(ai_pipeline, "compute_embedding", lambda crop_image: embedding_b.clone())
+     files = {"file": ("tiger_b.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+@@ -287,6 +348,8 @@ def test_distinct_embeddings_do_not_score_as_identical(client, monkeypatch):
+ 
+     assert second["candidate_matches"], "expected a candidate match against tiger A"
+     assert second["candidate_matches"][0]["similarity_score"] == pytest.approx(0.0, abs=1e-3)
++    assert second["match_status"] == "POSSIBLE_NEW"
++    assert second["tiger_id"] is None
+ 
+ 
+ def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
+@@ -304,7 +367,12 @@ def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
+     `existing.embedding_path == embedding_rel_path` guard, this test
+     fails (the decoy tiger would show up in candidate_matches at 1.0,
+     because by the time it's compared its file has literally been
+-    overwritten with the new call's embedding)."""
++    overwritten with the new call's embedding).
++
++    The decoy call uses an explicit tiger_id so its embedding is actually
++    persisted -- the Re-ID decision engine's automatic path (no
++    tiger_id) does not persist an embedding for REVIEW/POSSIBLE_NEW, so
++    it wouldn't otherwise be in the gallery for the collision to bite."""
+     db, service_module = service_env
+ 
+     fixed_embedding = torch.nn.functional.normalize(torch.full((1, 1536), 2.0), dim=1)
+@@ -322,10 +390,16 @@ def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
+ 
+     monkeypatch.setattr(service_module, "_validate_and_save_upload", forced_validate)
+ 
++    from app import crud, schemas as app_schemas
++
++    crud.create_tiger(db, app_schemas.TigerCreate(tiger_id="TIGER-DECOY", status="active"))
+     decoy_result = service_module.analyze_image(
+-        db=db, upload=_FakeUpload("decoy.jpg"), raw_bytes=_make_test_jpeg_bytes()
++        db=db,
++        upload=_FakeUpload("decoy.jpg"),
++        raw_bytes=_make_test_jpeg_bytes(),
++        tiger_id="TIGER-DECOY",
+     )
+-    assert decoy_result.tiger_status == "new"
++    assert decoy_result.tiger_status == "matched"
+     decoy_tiger_id = decoy_result.tiger_id
+ 
+     # Second call reuses the identical forced image_id, so its
+@@ -339,11 +413,17 @@ def test_guard_excludes_embedding_path_collision(service_env, monkeypatch):
+         "the path-collision guard should have excluded this row instead "
+         "of comparing the new embedding to itself"
+     )
++    # With the (correctly excluded) decoy as the only possible candidate,
++    # the gallery is effectively empty -> POSSIBLE_NEW.
++    assert second_result.match_status == "POSSIBLE_NEW"
+ 
+ 
+ def test_get_analysis_result(client, mock_detection_with_animal):
++    client.post("/api/tigers", json={"tiger_id": "TIGER-GETRESULT"})
+     files = {"file": ("tiger.jpg", _make_test_jpeg_bytes(), "image/jpeg")}
+-    created = client.post("/api/analyze", files=files).json()
++    created = client.post(
++        "/api/analyze", files=files, data={"tiger_id": "TIGER-GETRESULT"}
++    ).json()
+ 
+     resp = client.get(f"/api/analyze/{created['sighting_id']}")
+     assert resp.status_code == 200
+diff --git a/backend/tests/test_reid_decision.py b/backend/tests/test_reid_decision.py
+new file mode 100644
+index 0000000..9c4e93b
+--- /dev/null
++++ b/backend/tests/test_reid_decision.py
+@@ -0,0 +1,182 @@
++"""
++Unit tests for the Re-ID decision engine (app.services.reid_decision) and
++its configuration (app.config).
++
++These are pure unit tests -- no HTTP layer, no DB, no AI models -- for the
++decision logic and threshold validation in isolation. End-to-end coverage
++through /api/analyze lives in tests/test_analyze.py.
++
++Run from backend/:  pytest -q
++"""
++
++import os
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++import pytest
++
++from app import schemas
++from app.config import InvalidReIDConfigError, ReIDSettings, get_reid_settings
++from app.services import reid_decision
++
++
++def _candidate(tiger_id: str, score: float) -> schemas.CandidateMatch:
++    return schemas.CandidateMatch(tiger_id=tiger_id, similarity_score=score)
++
++
++# ---------------------------------------------------------------------------
++# Decision logic
++# ---------------------------------------------------------------------------
++
++
++def test_high_similarity_is_auto_match(monkeypatch):
++    monkeypatch.delenv("REID_AUTO_MATCH_THRESHOLD", raising=False)
++    monkeypatch.delenv("REID_REVIEW_THRESHOLD", raising=False)
++
++    decision = reid_decision.decide([_candidate("TIGER-001", 0.94)])
++
++    assert decision.match_status == reid_decision.AUTO_MATCH
++    assert decision.matched_tiger_id == "TIGER-001"
++    assert decision.best_similarity == pytest.approx(0.94)
++    assert decision.review_required is False
++
++
++def test_middle_similarity_is_review(monkeypatch):
++    monkeypatch.delenv("REID_AUTO_MATCH_THRESHOLD", raising=False)
++    monkeypatch.delenv("REID_REVIEW_THRESHOLD", raising=False)
++
++    decision = reid_decision.decide([_candidate("TIGER-001", 0.60)])
++
++    assert decision.match_status == reid_decision.REVIEW
++    assert decision.matched_tiger_id is None
++    assert decision.best_similarity == pytest.approx(0.60)
++    assert decision.review_required is True
++
++
++def test_low_similarity_is_possible_new(monkeypatch):
++    monkeypatch.delenv("REID_AUTO_MATCH_THRESHOLD", raising=False)
++    monkeypatch.delenv("REID_REVIEW_THRESHOLD", raising=False)
++
++    decision = reid_decision.decide([_candidate("TIGER-001", 0.20)])
++
++    assert decision.match_status == reid_decision.POSSIBLE_NEW
++    assert decision.matched_tiger_id is None
++    assert decision.best_similarity == pytest.approx(0.20)
++    assert decision.review_required is True
++
++
++def test_no_candidates_is_possible_new(monkeypatch):
++    monkeypatch.delenv("REID_AUTO_MATCH_THRESHOLD", raising=False)
++    monkeypatch.delenv("REID_REVIEW_THRESHOLD", raising=False)
++
++    decision = reid_decision.decide([])
++
++    assert decision.match_status == reid_decision.POSSIBLE_NEW
++    assert decision.matched_tiger_id is None
++    assert decision.best_similarity is None
++    assert decision.confidence is None
++    assert decision.review_required is True
++
++
++def test_thresholds_are_inclusive_boundaries(monkeypatch):
++    """AUTO_MATCH is best_similarity >= threshold (not strictly greater),
++    and likewise for REVIEW -- exact boundary values should land on the
++    higher-confidence side."""
++    monkeypatch.setenv("REID_AUTO_MATCH_THRESHOLD", "0.75")
++    monkeypatch.setenv("REID_REVIEW_THRESHOLD", "0.50")
++
++    assert reid_decision.decide([_candidate("T", 0.75)]).match_status == reid_decision.AUTO_MATCH
++    assert reid_decision.decide([_candidate("T", 0.50)]).match_status == reid_decision.REVIEW
++    assert (
++        reid_decision.decide([_candidate("T", 0.4999)]).match_status
++        == reid_decision.POSSIBLE_NEW
++    )
++
++
++def test_nan_similarity_is_ignored_like_no_candidate(monkeypatch):
++    monkeypatch.delenv("REID_AUTO_MATCH_THRESHOLD", raising=False)
++    monkeypatch.delenv("REID_REVIEW_THRESHOLD", raising=False)
++
++    decision = reid_decision.decide([_candidate("TIGER-NAN", float("nan"))])
++
++    assert decision.match_status == reid_decision.POSSIBLE_NEW
++    assert decision.matched_tiger_id is None
++
++
++def test_duplicate_and_tied_candidates_use_best_score(monkeypatch):
++    monkeypatch.delenv("REID_AUTO_MATCH_THRESHOLD", raising=False)
++    monkeypatch.delenv("REID_REVIEW_THRESHOLD", raising=False)
++
++    # Duplicate tiger_id: keep the higher of the two scores.
++    decision = reid_decision.decide(
++        [_candidate("TIGER-DUP", 0.3), _candidate("TIGER-DUP", 0.9)]
++    )
++    assert decision.match_status == reid_decision.AUTO_MATCH
++    assert decision.matched_tiger_id == "TIGER-DUP"
++    assert decision.best_similarity == pytest.approx(0.9)
++
++    # Two different tigers tied at the same score: decision is still
++    # deterministic and doesn't crash.
++    decision = reid_decision.decide(
++        [_candidate("TIGER-A", 0.9), _candidate("TIGER-B", 0.9)]
++    )
++    assert decision.match_status == reid_decision.AUTO_MATCH
++    assert decision.matched_tiger_id in {"TIGER-A", "TIGER-B"}
++
++
++# ---------------------------------------------------------------------------
++# Configuration validation
++# ---------------------------------------------------------------------------
++
++
++def test_default_thresholds_are_valid(monkeypatch):
++    monkeypatch.delenv("REID_AUTO_MATCH_THRESHOLD", raising=False)
++    monkeypatch.delenv("REID_REVIEW_THRESHOLD", raising=False)
++
++    settings = get_reid_settings()
++    assert settings.auto_match_threshold == pytest.approx(0.75)
++    assert settings.review_threshold == pytest.approx(0.50)
++
++
++def test_custom_thresholds_from_env(monkeypatch):
++    monkeypatch.setenv("REID_AUTO_MATCH_THRESHOLD", "0.85")
++    monkeypatch.setenv("REID_REVIEW_THRESHOLD", "0.60")
++
++    settings = get_reid_settings()
++    assert settings.auto_match_threshold == pytest.approx(0.85)
++    assert settings.review_threshold == pytest.approx(0.60)
++
++
++def test_auto_match_threshold_must_exceed_review_threshold():
++    with pytest.raises(InvalidReIDConfigError):
++        ReIDSettings(auto_match_threshold=0.5, review_threshold=0.5)
++
++    with pytest.raises(InvalidReIDConfigError):
++        ReIDSettings(auto_match_threshold=0.4, review_threshold=0.6)
++
++
++def test_thresholds_out_of_range_are_rejected():
++    with pytest.raises(InvalidReIDConfigError):
++        ReIDSettings(auto_match_threshold=1.5, review_threshold=0.5)
++
++    with pytest.raises(InvalidReIDConfigError):
++        ReIDSettings(auto_match_threshold=0.9, review_threshold=-2.0)
++
++
++def test_non_numeric_env_var_raises_clear_error(monkeypatch):
++    monkeypatch.setenv("REID_AUTO_MATCH_THRESHOLD", "not-a-number")
++    monkeypatch.setenv("REID_REVIEW_THRESHOLD", "0.5")
++
++    with pytest.raises(InvalidReIDConfigError):
++        get_reid_settings()
++
++
++def test_invalid_env_config_surfaces_from_decide(monkeypatch):
++    """The decision engine must propagate a bad configuration as a clear
++    error rather than silently misclassifying every request."""
++    monkeypatch.setenv("REID_AUTO_MATCH_THRESHOLD", "0.4")
++    monkeypatch.setenv("REID_REVIEW_THRESHOLD", "0.5")  # invalid: auto <= review
++
++    with pytest.raises(InvalidReIDConfigError):
++        reid_decision.decide([_candidate("TIGER-001", 0.9)])

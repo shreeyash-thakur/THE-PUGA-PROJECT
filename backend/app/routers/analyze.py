@@ -25,10 +25,18 @@ async def analyze_image(
     """Run the full MegaDetector -> crop -> MegaDescriptor -> SQLite
     pipeline on one uploaded image.
 
-    If `tiger_id` is omitted, a new tiger record is created automatically
-    (status "unidentified") and candidate matches against existing tigers
-    are returned for a human to review -- no similarity threshold is
-    applied automatically.
+    If `tiger_id` is supplied, the sighting is assigned to that tiger
+    directly (explicit human decision).
+
+    Otherwise, the Re-ID decision engine (app.services.reid_decision)
+    classifies the best similarity match against the existing gallery as
+    AUTO_MATCH, REVIEW, or POSSIBLE_NEW:
+      - AUTO_MATCH: the sighting is automatically assigned to the
+        matched existing tiger.
+      - REVIEW / POSSIBLE_NEW: no tiger is created or assigned
+        automatically; `match_status`/`review_required` tell the caller
+        a human needs to decide. No Sighting/Embedding row is created
+        for this case yet -- that's handled by the human-review workflow.
     """
     raw_bytes = await file.read()
 

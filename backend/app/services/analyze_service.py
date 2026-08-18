@@ -16,6 +16,7 @@ stay separate, per the task's code-quality requirements.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -26,7 +27,9 @@ from sqlalchemy.orm import Session
 
 from app import crud, schemas
 from app.database import IMAGES_DIR, CROPS_DIR, EMBEDDINGS_DIR, DATA_DIR
-from app.services import ai_pipeline
+from app.services import ai_pipeline, reid_decision
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 MAX_CANDIDATE_MATCHES = 5
@@ -169,20 +172,82 @@ def analyze_image(
     if ranked:
         best_similarity = ranked[0][1]
 
-    # --- tiger record --------------------------------------------------
+    # --- tiger record / Re-ID decision -----------------------------------
+    #
+    # If the caller explicitly supplied tiger_id, that's a deliberate
+    # human decision and always wins -- the automatic decision engine
+    # below only runs for the "figure it out automatically" path.
+    decision: Optional[reid_decision.ReIDDecision] = None
+    resolved_tiger_id: Optional[str]
+    tiger_status: Optional[str]
+
     if tiger_id is not None:
         resolved_tiger_id = tiger_id
         tiger_status = "matched"  # explicitly assigned by the caller
     else:
-        resolved_tiger_id = crud.generate_unique_tiger_id(db)
-        crud.create_tiger(
-            db,
-            schemas.TigerCreate(
-                tiger_id=resolved_tiger_id,
-                status="unidentified",
-            ),
+        decision = reid_decision.decide(candidate_matches)
+
+        if decision.match_status == reid_decision.AUTO_MATCH:
+            # Belt-and-suspenders: never assign to a tiger_id that isn't
+            # actually in the DB (e.g. deleted between the similarity
+            # query above and now). Downgrade to REVIEW instead of
+            # crashing or silently mis-assigning.
+            if crud.get_tiger(db, decision.matched_tiger_id) is None:
+                logger.warning(
+                    "RE-ID: AUTO_MATCH candidate tiger '%s' no longer "
+                    "exists; downgrading this decision to REVIEW.",
+                    decision.matched_tiger_id,
+                )
+                decision = reid_decision.ReIDDecision(
+                    match_status=reid_decision.REVIEW,
+                    matched_tiger_id=None,
+                    best_similarity=decision.best_similarity,
+                    confidence=decision.confidence,
+                    review_required=True,
+                )
+
+        if decision.match_status == reid_decision.AUTO_MATCH:
+            resolved_tiger_id = decision.matched_tiger_id
+            tiger_status = "matched"
+        else:
+            # REVIEW / POSSIBLE_NEW: per spec, do NOT auto-create a new
+            # tiger and do NOT assign an existing one -- that decision is
+            # left to a human. Since Sighting/Embedding rows require a
+            # resolved tiger_id, neither is created yet either; linking
+            # (or creating) a tiger for this sighting is deferred to the
+            # human-review workflow (a later step). The image/crop/
+            # embedding files saved above stay on disk so that workflow
+            # can reuse them without recomputing anything.
+            resolved_tiger_id = None
+            tiger_status = None
+
+    if resolved_tiger_id is None:
+        note = (
+            f"Re-ID decision: {decision.match_status}. No tiger was "
+            "created or assigned automatically; human review is required "
+            "before this sighting can be linked to a tiger. "
+            "candidate_matches lists the closest existing tigers, if any."
         )
-        tiger_status = "new"
+        return schemas.AnalyzeResponse(
+            image_id=image_id,
+            image_path=image_rel_path,
+            detections=detections,
+            animal_detected=True,
+            used_detection=best,
+            crop_path=crop_rel_path,
+            embedding_id=None,
+            embedding_path=embedding_rel_path,
+            sighting_id=None,
+            tiger_id=None,
+            tiger_status=None,
+            candidate_matches=candidate_matches,
+            match_status=decision.match_status,
+            matched_tiger_id=None,
+            best_similarity=decision.best_similarity,
+            confidence=decision.confidence,
+            review_required=decision.review_required,
+            note=note,
+        )
 
     # --- sighting + embedding rows --------------------------------------
     sighting = crud.create_sighting(
@@ -212,18 +277,14 @@ def analyze_image(
         ),
     )
 
-    note = (
-        "Similarity scores are informational only -- no fixed threshold "
-        "is applied, so 'candidate_matches' is not an automatic "
-        "identification. "
-    )
-    note += (
-        f"Sighting assigned to caller-specified tiger '{resolved_tiger_id}'."
-        if tiger_status == "matched"
-        else f"No tiger_id was supplied, so a new tiger '{resolved_tiger_id}' "
-        "was created; review candidate_matches to decide whether this is "
-        "actually a known tiger."
-    )
+    if decision is not None:
+        note = (
+            f"Re-ID decision: AUTO_MATCH (similarity="
+            f"{decision.best_similarity:.4f}) -- automatically assigned "
+            f"to existing tiger '{resolved_tiger_id}'."
+        )
+    else:
+        note = f"Sighting assigned to caller-specified tiger '{resolved_tiger_id}'."
 
     return schemas.AnalyzeResponse(
         image_id=image_id,
@@ -238,6 +299,13 @@ def analyze_image(
         tiger_id=resolved_tiger_id,
         tiger_status=tiger_status,
         candidate_matches=candidate_matches,
+        match_status=decision.match_status if decision is not None else None,
+        matched_tiger_id=resolved_tiger_id if decision is not None else None,
+        best_similarity=(
+            decision.best_similarity if decision is not None else best_similarity
+        ),
+        confidence=decision.confidence if decision is not None else None,
+        review_required=decision.review_required if decision is not None else False,
         note=note,
     )
 
